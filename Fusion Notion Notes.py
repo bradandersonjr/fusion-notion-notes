@@ -46,7 +46,7 @@ Technical Details:
 - Includes comprehensive error handling and cleanup procedures
 """
 
-import adsk.core, adsk.fusion, traceback, webbrowser, json, os
+import adsk.core, adsk.fusion, traceback, webbrowser, json, os, subprocess, platform
 
 # ============================================================================
 # CONSTANTS AND CONFIGURATION
@@ -142,6 +142,106 @@ def show_error_message(ui, error_message):
         ui.messageBox(error_message, ADDIN_NAME, 0, 0)
 
 
+def check_notion_protocol_handler():
+    """Checks if the Notion protocol handler (notion://) is available.
+    
+    Returns:
+        True if protocol handler exists, False otherwise
+    """
+    try:
+        if platform.system() == 'Windows':
+            # On Windows, check registry for notion:// protocol handler
+            try:
+                # Use reg query to check if notion protocol is registered
+                result = subprocess.run(
+                    ['reg', 'query', 'HKEY_CLASSES_ROOT\\notion', '/ve'],
+                    capture_output=True,
+                    timeout=2,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                return result.returncode == 0
+            except Exception:
+                # If registry check fails, assume protocol might not exist
+                return False
+        else:
+            # On macOS/Linux, we can't easily check, so assume it might exist
+            # The webbrowser module will handle it
+            return True
+    except Exception:
+        return False
+
+
+def open_notion_with_fallback(protocol='https', ui=None):
+    """Opens Notion URL with fallback to web if desktop app is not available.
+    
+    Args:
+        protocol: 'notion' for desktop app, 'https' for web browser
+        ui: User interface object for showing messages (optional)
+    
+    Returns:
+        True if opened successfully, False otherwise
+    """
+    try:
+        url = get_notion_url(protocol=protocol)
+        
+        if protocol == 'notion':
+            # Check if protocol handler exists before trying
+            if not check_notion_protocol_handler():
+                # Protocol handler doesn't exist, fall back to web browser
+                web_url = get_notion_url(protocol='https')
+                webbrowser.open_new(web_url)
+                if ui:
+                    ui.messageBox(
+                        'Notion desktop app not found. Opened in web browser instead.',
+                        ADDIN_NAME,
+                        0,  # OK button only
+                        0   # Information icon
+                    )
+                return False
+            
+            # Try to open with desktop app
+            try:
+                result = webbrowser.open(url)
+                
+                # On some systems, webbrowser.open() might return False on failure
+                # But on Windows, it often returns True even if protocol handler doesn't work well
+                # So we rely on the registry check above
+                return True
+                
+            except Exception:
+                # If opening fails, fall back to web browser
+                web_url = get_notion_url(protocol='https')
+                webbrowser.open_new(web_url)
+                if ui:
+                    ui.messageBox(
+                        'Could not open Notion desktop app. Opened in web browser instead.',
+                        ADDIN_NAME,
+                        0,  # OK button only
+                        0   # Information icon
+                    )
+                return False
+        else:
+            # Open in web browser
+            webbrowser.open_new(url)
+            return True
+            
+    except Exception as e:
+        # If everything fails, try web browser as last resort
+        try:
+            web_url = get_notion_url(protocol='https')
+            webbrowser.open_new(web_url)
+            if ui and protocol == 'notion':
+                ui.messageBox(
+                    'Could not open Notion desktop app. Opened in web browser instead.',
+                    ADDIN_NAME,
+                    0,
+                    0
+                )
+        except Exception:
+            pass  # If even web browser fails, we're out of options
+        return False
+
+
 # ============================================================================
 # PALETTE HANDLER
 # ============================================================================
@@ -223,11 +323,11 @@ class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
             default_method = config.get('default_open_method', 'web')
 
             if default_method == 'desktop':
-                url = get_notion_url(protocol='notion')
-                webbrowser.open(url)
+                # Try desktop app with fallback to web
+                open_notion_with_fallback(protocol='notion', ui=self.ui)
             else:
-                url = get_notion_url(protocol='https')
-                webbrowser.open_new(url)
+                # Open in web browser
+                open_notion_with_fallback(protocol='https', ui=self.ui)
 
         except Exception as e:
             show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
