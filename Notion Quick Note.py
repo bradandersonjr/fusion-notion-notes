@@ -4,16 +4,17 @@ Notion Quick Note - Fusion 360 Add-in
 
 A simple Fusion 360 add-in that provides quick access to create new Notion pages
 directly from the Fusion 360 interface. This add-in adds a button to the Quick Access
-Toolbar (QAT) that opens a new Notion page in your default web browser.
+Toolbar (QAT) that opens a beautiful HTML palette with options for web or desktop.
 
 Author: Brad Anderson Jr
 Contact: brad@bradandersonjr.com
-Version: 0.1.0
+Version: 0.5.0
 
 Features:
-- One-click access to create new Notion pages
-- Integrates seamlessly with Fusion 360's Quick Access Toolbar
-- Opens Notion in your default web browser for maximum compatibility
+- One-click QAT button to create new Notion pages
+- Settings panel in Scripts menu to configure database and open method
+- Choose default behavior: web browser or desktop app
+- Configuration saved locally (no login or API authentication required)
 - Clean error handling with user-friendly messages
 
 Installation:
@@ -24,186 +25,354 @@ Installation:
 5. The Notion Quick Note button will appear in your Quick Access Toolbar
 
 Usage:
-- Click the "Notion Quick Note" button in the Quick Access Toolbar
-- A new Notion page will open in your default web browser
-- Start taking notes or creating content immediately
+- Click "Notion Quick Note" button to open the palette
+- Choose to open in Web Browser or Desktop App
+- Configure your database URL in settings
+- If configured, new pages will open in your specified database
+- If not configured, new pages will open in your default Notion location
+
+Configuration:
+- The database URL is saved in a local JSON file (notion_config.json)
+- No authentication or API keys required
+- Simply paste the URL of your Notion database in the settings dialog
 
 Technical Details:
 - Uses Fusion 360's Command and Event Handler architecture
+- Custom HTML palette for beautiful UI
 - Leverages Python's webbrowser module for cross-platform compatibility
+- Supports both HTTPS (web) and notion:// (desktop app) protocols
+- Configuration stored in JSON format in the add-in directory
 - Follows Fusion 360 add-in best practices for UI integration
 - Includes comprehensive error handling and cleanup procedures
 """
 
-import adsk.core, adsk.fusion, traceback, webbrowser
+import adsk.core, adsk.fusion, traceback, webbrowser, json, os
 
 # ============================================================================
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
 ADDIN_NAME = 'Notion Quick Note'  # Display name for the add-in
-ADDIN_VERSION = '0.1.0'  # Current version number
+ADDIN_VERSION = '0.6.0'  # Current version number
 ADDIN_AUTHOR = 'Brad Anderson Jr'  # Add-in author
 ADDIN_CONTACT = 'brad@bradandersonjr.com'  # Contact information
 ERROR_MSG = 'Failed:\n{}'  # Template for error message formatting
+CONFIG_FILENAME = 'notion_config.json'  # Configuration file name
+PALETTE_ID = 'NotionQuickNotePalette'  # Unique ID for the palette
+SETTINGS_CMD_ID = 'NotionQuickNoteSettings'  # Command ID for settings
 
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
 
 # List to hold event handlers to prevent them from being garbage collected
-# This is critical in Fusion 360 add-ins - without this, Python's garbage
-# collector may clean up event handlers, causing the add-in to stop working
 handlers = []
+
+# Reference to the palette
+palette = None
 
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def show_error_message(ui, error_message):
-    """
-    Displays an error message dialog to the user in Fusion 360.
-    
-    This function provides a standardized way to show error messages with
-    consistent formatting and branding. It safely handles cases where the
-    UI object might be None or invalid.
+def get_config_path():
+    """Gets the full path to the configuration file."""
+    addin_dir = os.path.dirname(os.path.realpath(__file__))
+    return os.path.join(addin_dir, CONFIG_FILENAME)
 
-    Args:
-        ui (adsk.core.UserInterface): The Fusion 360 user interface object.
-                                    If None, the function will safely exit
-                                    without displaying anything.
-        error_message (str): The error message text to display to the user.
-                           Should be descriptive and user-friendly.
-    
-    Returns:
-        None
-        
-    Note:
-        The message box parameters (0, 0) specify:
-        - Message box type: 0 = OKMessageBoxButtonType
-        - Icon type: 0 = NoIconMessageBoxIconType
-    """
+
+def load_config():
+    """Loads the configuration from the JSON file."""
+    config_path = get_config_path()
+    if not os.path.exists(config_path):
+        # Create default config file
+        default_config = {
+            "database_url": "https://www.notion.so/new",
+            "default_open_method": "web"
+        }
+        save_config(default_config)
+        return default_config
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except Exception:
+        # If loading fails, return default config
+        default_config = {
+            "database_url": "https://www.notion.so/new",
+            "default_open_method": "web"
+        }
+        return default_config
+
+
+def save_config(config):
+    """Saves the configuration to the JSON file."""
+    config_path = get_config_path()
+    try:
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def get_notion_url(protocol='https'):
+    """Gets the appropriate Notion URL based on configuration."""
+    config = load_config()
+    database_url = config.get('database_url', '').strip()
+
+    if database_url:
+        # User has configured a database URL
+        if protocol == 'notion':
+            # Convert https:// to notion://
+            if database_url.startswith('https://'):
+                return database_url.replace('https://', 'notion://', 1)
+            elif database_url.startswith('http://'):
+                return database_url.replace('http://', 'notion://', 1)
+        return database_url
+    else:
+        # No database configured, use default new page URL
+        if protocol == 'notion':
+            return 'notion://www.notion.so/new'
+        else:
+            return 'https://www.notion.so/new'
+
+
+def show_error_message(ui, error_message):
+    """Displays an error message dialog to the user."""
     if ui:
         ui.messageBox(error_message, ADDIN_NAME, 0, 0)
 
+
 # ============================================================================
-# EVENT HANDLER CLASSES
+# PALETTE HANDLER
 # ============================================================================
 
-class NewNotionPageCommandExecuteHandler(adsk.core.CommandEventHandler):
-    """
-    Handles the execution of the "New Notion Page" command.
-    
-    This class is responsible for the actual functionality when the user clicks
-    the Notion Quick Note button. It inherits from Fusion 360's CommandEventHandler
-    and implements the notify method to define what happens when the command is executed.
-    
-    The handler simply opens a new Notion page in the user's default web browser
-    using Python's webbrowser module for maximum cross-platform compatibility.
-    """
-    
+class PaletteCommandHandler(adsk.core.HTMLEventHandler):
+    """Handles events from the HTML palette."""
+
     def __init__(self, ui):
-        """
-        Initialize the command execute handler.
-        
-        Args:
-            ui (adsk.core.UserInterface): The Fusion 360 user interface object,
-                                        used for displaying error messages if needed.
-        """
         super().__init__()
-        self.ui = ui  # Store UI reference for error message display
-    
+        self.ui = ui
+
     def notify(self, args):
-        """
-        Called when the user clicks the Notion Quick Note button.
-        
-        This method is automatically invoked by Fusion 360 when the command
-        is executed. It opens a new Notion page in the user's default web browser.
-        
-        Args:
-            args (adsk.core.CommandEventArgs): Event arguments from Fusion 360.
-                                             Not used in this implementation but
-                                             required by the interface.
-        
-        Returns:
-            None
-            
-        Note:
-            Any exceptions are caught and displayed to the user via a message box
-            to prevent the add-in from crashing Fusion 360.
-        """
+        """Called when the HTML palette sends a message."""
         try:
-            # Open new Notion page in the user's default web browser
-            # The webbrowser.open_new() function creates a new browser window/tab
-            webbrowser.open_new('https://www.notion.so/new')
-                
+            htmlArgs = adsk.core.HTMLEventArgs.cast(args)
+            action = htmlArgs.action
+
+            if action == 'getConfig':
+                # Send current configuration to the palette
+                config = load_config()
+                database_url = config.get('database_url', '')
+                default_method = config.get('default_open_method', 'web')
+                return_data = json.dumps({
+                    'action': 'setConfig',
+                    'databaseUrl': database_url,
+                    'defaultMethod': default_method
+                })
+                htmlArgs.returnData = return_data
+                # Also proactively send via sendInfoToHTML as backup
+                try:
+                    global palette
+                    if palette and palette.isVisible:
+                        palette.sendInfoToHTML('setConfig', return_data)
+                except Exception:
+                    pass  # Silently fail if palette not ready
+
+            elif action == 'savePreferences':
+                # Save preferences from the settings panel
+                data = json.loads(htmlArgs.data) if htmlArgs.data else {}
+                config = load_config()
+
+                database_url = data.get('databaseUrl', '').strip()
+                default_method = data.get('defaultMethod', 'web')
+
+                config['database_url'] = database_url
+                config['default_open_method'] = default_method
+
+                save_config(config)
+
+            elif action == 'openNotionForUrl':
+                # Open Notion in web browser so user can navigate and get database URL
+                webbrowser.open_new('https://www.notion.so')
+
         except Exception as e:
-            # If anything goes wrong, show a user-friendly error message
-            # The traceback provides detailed error information for debugging
             show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
 
 
-class NewNotionPageCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
-    """
-    Handles the creation and setup of the "New Notion Page" command.
-    
-    This class is responsible for setting up the command when it's first created
-    by Fusion 360. It attaches the execute handler that defines what happens
-    when the user actually clicks the button.
-    
-    This separation of concerns (creation vs execution) is part of Fusion 360's
-    event-driven architecture and allows for more complex command behaviors
-    like input validation, custom UI dialogs, etc.
-    """
+# ============================================================================
+# COMMAND HANDLERS
+# ============================================================================
+
+class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
+    """Handles opening Notion directly from the QAT button."""
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+
+    def notify(self, args):
+        """Called when the user clicks the Notion Quick Note button."""
+        try:
+            config = load_config()
+            default_method = config.get('default_open_method', 'web')
+
+            if default_method == 'desktop':
+                url = get_notion_url(protocol='notion')
+                webbrowser.open(url)
+            else:
+                url = get_notion_url(protocol='https')
+                webbrowser.open_new(url)
+
+        except Exception as e:
+            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
+
+
+def send_config_to_palette(palette_instance):
+    """Helper function to send current config to the palette."""
+    if palette_instance and palette_instance.isVisible:
+        try:
+            config = load_config()
+            database_url = config.get('database_url', '')
+            default_method = config.get('default_open_method', 'web')
+            config_data = json.dumps({
+                'action': 'setConfig',
+                'databaseUrl': database_url,
+                'defaultMethod': default_method
+            })
+            palette_instance.sendInfoToHTML('setConfig', config_data)
+        except Exception:
+            pass  # Silently fail if palette is not ready
+
+
+class PaletteClosedHandler(adsk.core.UserInterfaceGeneralEventHandler):
+    """Handles palette closed events - when reopened, config will be sent."""
     
     def __init__(self, ui):
-        """
-        Initialize the command created handler.
-        
-        Args:
-            ui (adsk.core.UserInterface): The Fusion 360 user interface object,
-                                        used for displaying error messages if needed.
-        """
         super().__init__()
-        self.ui = ui  # Store UI reference for error message display
+        self.ui = ui
     
     def notify(self, args):
-        """
-        Called when Fusion 360 creates the command definition.
-        
-        This method is automatically invoked by Fusion 360 when the command
-        is being set up. It attaches the execute handler that will be called
-        when the user actually clicks the button.
-        
-        Args:
-            args (adsk.core.CommandCreatedEventArgs): Event arguments containing
-                                                    the command object to configure.
-        
-        Returns:
-            None
-            
-        Note:
-            The execute handler is added to the global handlers list to prevent
-            Python's garbage collector from cleaning it up prematurely.
-        """
+        """Called when palette is closed."""
         try:
-            # Get the command object from the event arguments
+            # When palette is closed, we don't need to do anything
+            # Config will be sent when it's reopened via NotionSettingsHandler
+            pass
+        except Exception:
+            pass  # Silently fail
+
+
+class NotionSettingsHandler(adsk.core.CommandEventHandler):
+    """Handles showing the settings palette."""
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+
+    def notify(self, args):
+        """Called when the user clicks the settings command."""
+        try:
+            global palette
+
+            if palette:
+                # Toggle palette visibility
+                was_visible = palette.isVisible
+                palette.isVisible = not was_visible
+                # If palette is now visible, send config
+                if palette.isVisible:
+                    send_config_to_palette(palette)
+            else:
+                # Create the palette if it doesn't exist
+                palette = self.ui.palettes.itemById(PALETTE_ID)
+                if not palette:
+                    # Get the HTML file path
+                    addin_dir = os.path.dirname(os.path.realpath(__file__))
+                    html_file = os.path.join(addin_dir, 'palette.html')
+
+                    # Convert Windows path to file:// URL format
+                    # Replace backslashes with forward slashes for file:// URL
+                    html_file_url = html_file.replace('\\', '/')
+
+                    # Create the palette
+                    palette = self.ui.palettes.add(
+                        PALETTE_ID,
+                        'Notion Quick Note Settings',
+                        html_file_url,
+                        True,  # Show palette
+                        True,  # Show close button
+                        True,  # Can be resized
+                        720,   # Width
+                        900    # Height
+                    )
+
+                    # Add HTML event handler
+                    onHTML = PaletteCommandHandler(self.ui)
+                    palette.incomingFromHTML.add(onHTML)
+                    handlers.append(onHTML)
+
+                    # Add closed event handler to detect visibility changes
+                    onClosed = PaletteClosedHandler(self.ui)
+                    palette.closed.add(onClosed)
+                    handlers.append(onClosed)
+
+                    # Dock the palette to the right side
+                    palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+
+                    # Send initial config to palette immediately and after delays to ensure HTML is ready
+                    send_config_to_palette(palette)
+                    # Also send after short delays to ensure HTML has loaded
+                    def send_config_delayed():
+                        send_config_to_palette(palette)
+                    # Use a timer to send config after HTML loads (Fusion 360 doesn't have threading, so we'll rely on multiple sends)
+                    # The HTML will handle duplicate configs gracefully
+                else:
+                    palette.isVisible = True
+                    # Send config when showing existing palette
+                    send_config_to_palette(palette)
+
+        except Exception as e:
+            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
+
+
+class NotionQuickOpenCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    """Handles the creation of the Notion Quick Open command (QAT button)."""
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+
+    def notify(self, args):
+        """Called when the command is created."""
+        try:
             command = args.command
-            
-            # Create the execute handler that will handle button clicks
-            onExecute = NewNotionPageCommandExecuteHandler(self.ui)
-            
-            # Attach the execute handler to the command
+
+            # Add execute handler
+            onExecute = NotionQuickOpenHandler(self.ui)
             command.execute.add(onExecute)
-            
-            # Store the handler in the global list to prevent garbage collection
-            # This is critical - without this, the handler may be cleaned up
-            # and the button will stop working
             handlers.append(onExecute)
-            
+
         except Exception as e:
-            # If anything goes wrong during setup, show an error message
             show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
 
+
+class NotionSettingsCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    """Handles the creation of the Notion Settings command."""
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+
+    def notify(self, args):
+        """Called when the command is created."""
+        try:
+            command = args.command
+
+            # Add execute handler
+            onExecute = NotionSettingsHandler(self.ui)
+            command.execute.add(onExecute)
+            handlers.append(onExecute)
+
+        except Exception as e:
+            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
 
 
 # ============================================================================
@@ -211,122 +380,106 @@ class NewNotionPageCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 # ============================================================================
 
 def run(context):
-    """
-    Entry point for the Fusion 360 add-in when it's started.
-    
-    This function is automatically called by Fusion 360 when the add-in is loaded.
-    It's responsible for setting up the user interface elements and registering
-    event handlers. The function creates a button in the Quick Access Toolbar (QAT)
-    that users can click to open new Notion pages.
-    
-    The setup process involves:
-    1. Getting references to Fusion 360's application and UI objects
-    2. Creating a command definition that describes the button
-    3. Setting up event handlers for when the command is created and executed
-    4. Adding the button to the Quick Access Toolbar
-    
-    Args:
-        context: Fusion 360 context object (not used in this implementation
-                but required by the add-in interface)
-    
-    Returns:
-        None
-        
-    Note:
-        All setup is wrapped in a try-catch block to prevent the add-in from
-        crashing Fusion 360 if something goes wrong during initialization.
-    """
+    """Entry point for the Fusion 360 add-in."""
     try:
-        # Get the main Fusion 360 application object and user interface
         app = adsk.core.Application.get()
         ui = app.userInterface
 
-        # Get reference to the Quick Access Toolbar (QAT)
-        # This is the toolbar at the top of Fusion 360 with commonly used commands
+        # Get reference to the Quick Access Toolbar
         qatToolbar = ui.toolbars.itemById('QAT')
-        
-        # Create a unique command ID by combining the add-in name with 'CmdDef'
-        # This ensures our command doesn't conflict with other add-ins
-        command_id = f'{ADDIN_NAME}CmdDef'
-        
-        # Create the command definition that describes our button
-        # Parameters: command_id, display_name, tooltip, icon_folder
-        newNotionCmdDef = ui.commandDefinitions.addButtonDefinition(
-            command_id, 
-            ADDIN_NAME, 
-            'Create a new Notion page in browser',  # Tooltip text
-            './resources'  # Folder containing button icons
+
+        # Create QAT command (quick open button)
+        qat_command_id = f'{ADDIN_NAME}CmdDef'
+        notionQuickOpenCmdDef = ui.commandDefinitions.addButtonDefinition(
+            qat_command_id,
+            ADDIN_NAME,
+            'Create a new Notion page',
+            './resources'
         )
-        
-        # Create the command created handler and attach it to the command definition
-        # This handler will be called when Fusion 360 creates the command
-        onCommandCreated = NewNotionPageCommandCreatedHandler(ui)
-        newNotionCmdDef.commandCreated.add(onCommandCreated)
-        
-        # Store the handler in our global list to prevent garbage collection
-        handlers.append(onCommandCreated)
-        
-        # Add the command to the Quick Access Toolbar
-        # Parameters: command_definition, insert_before_id, is_promoted
-        # 'HealthStatusCommand' is used as a reference point for positioning
-        # False means the button is not promoted (always visible)
-        ctrl = qatToolbar.controls.addCommand(newNotionCmdDef, 'HealthStatusCommand', False)
+
+        # Create and attach command created handler for QAT button
+        onQuickOpenCreated = NotionQuickOpenCommandCreatedHandler(ui)
+        notionQuickOpenCmdDef.commandCreated.add(onQuickOpenCreated)
+        handlers.append(onQuickOpenCreated)
+
+        # Add the quick open button to the Quick Access Toolbar
+        qatToolbar.controls.addCommand(notionQuickOpenCmdDef, 'HealthStatusCommand', False)
+
+        # Create Settings command for Scripts menu
+        notionSettingsCmdDef = ui.commandDefinitions.addButtonDefinition(
+            SETTINGS_CMD_ID,
+            'Notion Quick Note Settings',
+            'Configure Notion database and default open method',
+            './resources'
+        )
+
+        # Create and attach command created handler for settings
+        onSettingsCreated = NotionSettingsCommandCreatedHandler(ui)
+        notionSettingsCmdDef.commandCreated.add(onSettingsCreated)
+        handlers.append(onSettingsCreated)
+
+        # Add settings to the ADD-INS panel in UTILITIES toolbar
+        workspace = ui.workspaces.itemById('FusionSolidEnvironment')
+        if workspace:
+            addInsPanel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+            if addInsPanel:
+                control = addInsPanel.controls.addCommand(notionSettingsCmdDef)
+                # Check if control is a dropdown and disable it
+                if control:
+                    try:
+                        # Try to access dropdown-specific properties
+                        if hasattr(control, 'isDropDown'):
+                            control.isDropDown = False
+                    except:
+                        pass
 
     except Exception as e:
-        # If anything goes wrong during setup, show an error message to the user
-        # This prevents the add-in from silently failing
-        show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))
+        if ui:
+            show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))
 
 
 def stop(context):
-    """
-    Cleanup function called when the Fusion 360 add-in is stopped or unloaded.
-    
-    This function is automatically called by Fusion 360 when the add-in is being
-    shut down. It's responsible for cleaning up all UI elements and event handlers
-    that were created during the run() function. Proper cleanup is essential to
-    prevent memory leaks and ensure that the add-in can be reloaded cleanly.
-    
-    The cleanup process involves:
-    1. Removing the command definition from Fusion 360's command registry
-    2. Removing the button from the Quick Access Toolbar
-    3. Event handlers are automatically cleaned up when the command is deleted
-    
-    Args:
-        context: Fusion 360 context object (not used in this implementation
-                but required by the add-in interface)
-    
-    Returns:
-        None
-        
-    Note:
-        The cleanup code uses defensive programming - it checks if each UI element
-        exists before trying to delete it. This prevents errors if the add-in
-        is stopped before being fully initialized.
-    """
+    """Cleanup function called when the add-in is stopped."""
     try:
-        # Get the main Fusion 360 application object and user interface
         app = adsk.core.Application.get()
         ui = app.userInterface
-        
-        # Reconstruct the command ID that was used during setup
-        command_id = f'{ADDIN_NAME}CmdDef'
-        
-        # Find and delete the command definition
-        # This removes the command from Fusion 360's command registry
-        cmdDef = ui.commandDefinitions.itemById(command_id)
+
+        # Hide and delete the palette
+        global palette
+        if palette:
+            palette.deleteMe()
+            palette = None
+
+        # Get reference to the Quick Access Toolbar
+        qatToolbar = ui.toolbars.itemById('QAT')
+
+        # Delete QAT command
+        qat_command_id = f'{ADDIN_NAME}CmdDef'
+        cmdDef = ui.commandDefinitions.itemById(qat_command_id)
         if cmdDef:
             cmdDef.deleteMe()
-        
-        # Find and delete the button from the Quick Access Toolbar
-        # This removes the visual button that users can see and click
-        qatToolbar = ui.toolbars.itemById('QAT')
-        cmd = qatToolbar.controls.itemById(command_id)
+
+        cmd = qatToolbar.controls.itemById(qat_command_id)
         if cmd:
             cmd.deleteMe()
-               
+
+        # Delete Settings command
+        settingsCmdDef = ui.commandDefinitions.itemById(SETTINGS_CMD_ID)
+        if settingsCmdDef:
+            settingsCmdDef.deleteMe()
+
+        # Remove from ADD-INS panel
+        workspace = ui.workspaces.itemById('FusionSolidEnvironment')
+        if workspace:
+            addInsPanel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+            if addInsPanel:
+                settingsControl = addInsPanel.controls.itemById(SETTINGS_CMD_ID)
+                if settingsControl:
+                    settingsControl.deleteMe()
+
+        # Clear handlers
+        handlers.clear()
+
     except:
-        # If anything goes wrong during cleanup, show an error message
-        # We use a bare except here because cleanup should be as robust as possible
-        # Even if we can't determine the specific error, we want to inform the user
-        show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))
+        if ui:
+            show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))

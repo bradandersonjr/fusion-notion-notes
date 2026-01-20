@@ -150,3 +150,6 @@ $RECYCLE.BIN/
 # Backup files
 *.bak
 *.backup
+
+# User-specific configuration
+notion_config.json
