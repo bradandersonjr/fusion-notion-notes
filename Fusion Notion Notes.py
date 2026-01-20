@@ -1,9 +1,9 @@
 """
-Notion Quick Note - Fusion 360 Add-in
+Fusion Notion Notes - Autodesk Fusion Add-in
 =====================================
 
-A simple Fusion 360 add-in that provides quick access to create new Notion pages
-directly from the Fusion 360 interface. This add-in adds a button to the Quick Access
+A simple Autodesk Fusion add-in that provides quick access to create new Notion pages
+directly from the Autodesk Fusion interface. This add-in adds a button to the Quick Access
 Toolbar (QAT) that opens a beautiful HTML palette with options for web or desktop.
 
 Author: Brad Anderson Jr
@@ -18,14 +18,14 @@ Features:
 - Clean error handling with user-friendly messages
 
 Installation:
-1. Copy this add-in folder to your Fusion 360 add-ins directory
-2. Start/restart Fusion 360
+1. Copy this add-in folder to your Autodesk Fusion add-ins directory
+2. Start/restart Autodesk Fusion
 3. Go to Scripts and Add-Ins dialog
 4. Select this add-in and click "Run"
-5. The Notion Quick Note button will appear in your Quick Access Toolbar
+5. The Fusion Notion Notes button will appear in your Quick Access Toolbar
 
 Usage:
-- Click "Notion Quick Note" button to open the palette
+- Click "Fusion Notion Notes" button to open the palette
 - Choose to open in Web Browser or Desktop App
 - Configure your database URL in settings
 - If configured, new pages will open in your specified database
@@ -37,12 +37,12 @@ Configuration:
 - Simply paste the URL of your Notion database in the settings dialog
 
 Technical Details:
-- Uses Fusion 360's Command and Event Handler architecture
+- Uses Autodesk Fusion's Command and Event Handler architecture
 - Custom HTML palette for beautiful UI
 - Leverages Python's webbrowser module for cross-platform compatibility
 - Supports both HTTPS (web) and notion:// (desktop app) protocols
 - Configuration stored in JSON format in the add-in directory
-- Follows Fusion 360 add-in best practices for UI integration
+- Follows Autodesk Fusion add-in best practices for UI integration
 - Includes comprehensive error handling and cleanup procedures
 """
 
@@ -51,14 +51,14 @@ import adsk.core, adsk.fusion, traceback, webbrowser, json, os
 # ============================================================================
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
-ADDIN_NAME = 'Notion Quick Note'  # Display name for the add-in
+ADDIN_NAME = 'Fusion Notion Notes'  # Display name for the add-in
 ADDIN_VERSION = '0.6.0'  # Current version number
 ADDIN_AUTHOR = 'Brad Anderson Jr'  # Add-in author
 ADDIN_CONTACT = 'brad@bradandersonjr.com'  # Contact information
 ERROR_MSG = 'Failed:\n{}'  # Template for error message formatting
 CONFIG_FILENAME = 'notion_config.json'  # Configuration file name
-PALETTE_ID = 'NotionQuickNotePalette'  # Unique ID for the palette
-SETTINGS_CMD_ID = 'NotionQuickNoteSettings'  # Command ID for settings
+PALETTE_ID = 'FusionNotionNotesPalette'  # Unique ID for the palette
+SETTINGS_CMD_ID = 'FusionNotionNotesSettings'  # Command ID for settings
 
 # ============================================================================
 # GLOBAL VARIABLES
@@ -194,6 +194,12 @@ class PaletteCommandHandler(adsk.core.HTMLEventHandler):
             elif action == 'openNotionForUrl':
                 # Open Notion in web browser so user can navigate and get database URL
                 webbrowser.open_new('https://www.notion.so')
+            
+            elif action == 'openUrl':
+                # Open a URL in the user's browser
+                url = htmlArgs.data if htmlArgs.data else ''
+                if url:
+                    webbrowser.open_new(url)
 
         except Exception as e:
             show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
@@ -211,7 +217,7 @@ class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
         self.ui = ui
 
     def notify(self, args):
-        """Called when the user clicks the Notion Quick Note button."""
+        """Called when the user clicks the Fusion Notion Notes button."""
         try:
             config = load_config()
             default_method = config.get('default_open_method', 'web')
@@ -295,7 +301,7 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
                     # Create the palette
                     palette = self.ui.palettes.add(
                         PALETTE_ID,
-                        'Notion Quick Note Settings',
+                        'Fusion Notion Notes Settings',
                         html_file_url,
                         True,  # Show palette
                         True,  # Show close button
@@ -322,7 +328,7 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
                     # Also send after short delays to ensure HTML has loaded
                     def send_config_delayed():
                         send_config_to_palette(palette)
-                    # Use a timer to send config after HTML loads (Fusion 360 doesn't have threading, so we'll rely on multiple sends)
+                    # Use a timer to send config after HTML loads (Autodesk Fusion doesn't have threading, so we'll rely on multiple sends)
                     # The HTML will handle duplicate configs gracefully
                 else:
                     palette.isVisible = True
@@ -380,7 +386,7 @@ class NotionSettingsCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 # ============================================================================
 
 def run(context):
-    """Entry point for the Fusion 360 add-in."""
+    """Entry point for the Autodesk Fusion add-in."""
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
@@ -408,7 +414,7 @@ def run(context):
         # Create Settings command for Scripts menu
         notionSettingsCmdDef = ui.commandDefinitions.addButtonDefinition(
             SETTINGS_CMD_ID,
-            'Notion Quick Note Settings',
+            'Fusion Notion Notes Settings',
             'Configure Notion database and default open method',
             './resources'
         )
