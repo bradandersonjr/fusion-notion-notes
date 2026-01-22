@@ -2,275 +2,576 @@
 Fusion Notion Notes - Autodesk Fusion Add-in
 =====================================
 
-A simple Autodesk Fusion add-in that provides quick access to create new Notion pages
-directly from the Autodesk Fusion interface. This add-in adds a button to the Quick Access
-Toolbar (QAT) that opens a beautiful HTML palette with options for web or desktop.
+A professional Autodesk Fusion add-in that provides quick access to create new Notion pages
+directly from the Autodesk Fusion interface. This add-in integrates seamlessly with Fusion's
+Quick Access Toolbar (QAT) and provides an elegant HTML-based settings interface.
 
 Author: Brad Anderson Jr
 Contact: brad@bradandersonjr.com
-Version: 0.5.0
+Version: 0.6.0
 
 Features:
-- One-click QAT button to create new Notion pages
-- Settings panel in Scripts menu to configure database and open method
-- Choose default behavior: web browser or desktop app
-- Configuration saved locally (no login or API authentication required)
-- Clean error handling with user-friendly messages
+    - One-click QAT button for instant Notion page creation
+    - Configurable settings panel accessible from Scripts menu
+    - Dual-mode operation: web browser or desktop app
+    - Persistent configuration with JSON storage
+    - No authentication required - uses public Notion URLs
+    - Automatic fallback when desktop app is unavailable
+    - Comprehensive error handling with user-friendly messages
 
 Installation:
-1. Copy this add-in folder to your Autodesk Fusion add-ins directory
-2. Start/restart Autodesk Fusion
-3. Go to Scripts and Add-Ins dialog
-4. Select this add-in and click "Run"
-5. The Fusion Notion Notes button will appear in your Quick Access Toolbar
+    1. Copy this add-in folder to your Autodesk Fusion add-ins directory
+    2. Start or restart Autodesk Fusion
+    3. Open the Scripts and Add-Ins dialog
+    4. Select this add-in and click "Run"
+    5. The Fusion Notion Notes button will appear in your Quick Access Toolbar
 
 Usage:
-- Click "Fusion Notion Notes" button to open the palette
-- Choose to open in Web Browser or Desktop App
-- Configure your database URL in settings
-- If configured, new pages will open in your specified database
-- If not configured, new pages will open in your default Notion location
+    - Click the "Fusion Notion Notes" button in the QAT to create a new Notion page
+    - Configure your preferred database URL and open method in the settings
+    - Settings automatically save and persist across sessions
+    - Desktop app mode automatically falls back to web browser if app is not installed
 
 Configuration:
-- The database URL is saved in a local JSON file (notion_config.json)
-- No authentication or API keys required
-- Simply paste the URL of your Notion database in the settings dialog
+    - Database URL: The Notion database where new pages will be created
+    - Open Method: Choose between 'web' (browser) or 'desktop' (Notion app)
+    - All settings are stored locally in notion_config.json
+    - No API keys or authentication tokens required
 
 Technical Details:
-- Uses Autodesk Fusion's Command and Event Handler architecture
-- Custom HTML palette for beautiful UI
-- Leverages Python's webbrowser module for cross-platform compatibility
-- Supports both HTTPS (web) and notion:// (desktop app) protocols
-- Configuration stored in JSON format in the add-in directory
-- Follows Autodesk Fusion add-in best practices for UI integration
-- Includes comprehensive error handling and cleanup procedures
+    - Built on Autodesk Fusion's Command and Event Handler architecture
+    - Uses HTML5-based palette for modern, responsive UI
+    - Cross-platform browser integration via Python's webbrowser module
+    - Protocol handler detection for notion:// URL scheme
+    - JSON-based configuration management
+    - Follows Autodesk Fusion add-in best practices
+    - Comprehensive cleanup procedures to prevent memory leaks
 """
 
-import adsk.core, adsk.fusion, traceback, webbrowser, json, os, subprocess, platform
+import adsk.core
+import adsk.fusion
+import traceback
+import webbrowser
+import json
+import os
+import subprocess
+import platform
+from typing import Optional, Dict, Any, Tuple
 
 # ============================================================================
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
-ADDIN_NAME = 'Fusion Notion Notes'  # Display name for the add-in
-ADDIN_VERSION = '0.6.0'  # Current version number
-ADDIN_AUTHOR = 'Brad Anderson Jr'  # Add-in author
-ADDIN_CONTACT = 'brad@bradandersonjr.com'  # Contact information
-ERROR_MSG = 'Failed:\n{}'  # Template for error message formatting
-CONFIG_FILENAME = 'notion_config.json'  # Configuration file name
-PALETTE_ID = 'FusionNotionNotesPalette'  # Unique ID for the palette
-SETTINGS_CMD_ID = 'FusionNotionNotesSettings'  # Command ID for settings
+
+# Add-in metadata
+ADDIN_NAME = 'Fusion Notion Notes'
+ADDIN_VERSION = '0.6.0'
+ADDIN_AUTHOR = 'Brad Anderson Jr'
+ADDIN_CONTACT = 'brad@bradandersonjr.com'
+
+# File and path constants
+CONFIG_FILENAME = 'notion_config.json'
+
+# UI element identifiers
+PALETTE_ID = 'FusionNotionNotesPalette'
+SETTINGS_CMD_ID = 'FusionNotionNotesSettings'
+
+# Default configuration values
+DEFAULT_NOTION_URL = 'https://www.notion.so/new'
+DEFAULT_OPEN_METHOD = 'web'
+
+# UI dimensions
+PALETTE_WIDTH = 720
+PALETTE_HEIGHT = 900
+
+# Message box constants
+MSG_BOX_OK_ONLY = 0
+MSG_BOX_INFO_ICON = 0
+
+# Error message template
+ERROR_MSG_TEMPLATE = 'Failed:\n{}'
+
+# Registry paths (Windows only)
+WINDOWS_REGISTRY_NOTION_KEY = 'HKEY_CLASSES_ROOT\\notion'
+REGISTRY_QUERY_TIMEOUT = 2  # seconds
 
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
 
-# List to hold event handlers to prevent them from being garbage collected
+# Event handler storage to prevent garbage collection
 handlers = []
 
-# Reference to the palette
+# Palette instance
 palette = None
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# CONFIGURATION MANAGEMENT
 # ============================================================================
 
-def get_config_path():
-    """Gets the full path to the configuration file."""
+def get_config_path() -> str:
+    """
+    Retrieves the absolute path to the configuration file.
+
+    The configuration file is stored in the same directory as this add-in script,
+    ensuring it persists across Fusion sessions and is specific to this add-in.
+
+    Returns:
+        str: Absolute path to the notion_config.json file
+
+    Example:
+        >>> config_path = get_config_path()
+        >>> print(config_path)
+        'C:/Users/User/AppData/Roaming/Autodesk/.../notion_config.json'
+    """
     addin_dir = os.path.dirname(os.path.realpath(__file__))
     return os.path.join(addin_dir, CONFIG_FILENAME)
 
 
-def load_config():
-    """Loads the configuration from the JSON file."""
+def create_default_config() -> Dict[str, str]:
+    """
+    Creates and returns a default configuration dictionary.
+
+    This configuration is used when no existing config file is found or when
+    loading the config file fails. It provides sensible defaults for first-time
+    users.
+
+    Returns:
+        Dict[str, str]: Default configuration with database URL and open method
+
+    Example:
+        >>> config = create_default_config()
+        >>> print(config['default_open_method'])
+        'web'
+    """
+    return {
+        'database_url': DEFAULT_NOTION_URL,
+        'default_open_method': DEFAULT_OPEN_METHOD
+    }
+
+
+def load_config() -> Dict[str, str]:
+    """
+    Loads the configuration from the JSON file.
+
+    This function attempts to read the configuration file. If the file doesn't
+    exist or cannot be parsed, it creates a new default configuration file
+    and returns the default values.
+
+    Returns:
+        Dict[str, str]: Configuration dictionary containing 'database_url' and
+                       'default_open_method' keys
+
+    Raises:
+        No exceptions are raised; errors are handled gracefully with defaults
+
+    Example:
+        >>> config = load_config()
+        >>> url = config.get('database_url')
+        >>> method = config.get('default_open_method')
+    """
     config_path = get_config_path()
+
+    # Create default config if file doesn't exist
     if not os.path.exists(config_path):
-        # Create default config file
-        default_config = {
-            "database_url": "https://www.notion.so/new",
-            "default_open_method": "web"
-        }
+        default_config = create_default_config()
         save_config(default_config)
         return default_config
+
+    # Attempt to load existing config
     try:
-        with open(config_path, 'r') as f:
-            return json.load(f)
-    except Exception:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        # Validate that required keys exist
+        if 'database_url' not in config or 'default_open_method' not in config:
+            raise ValueError('Invalid config format')
+
+        return config
+
+    except (json.JSONDecodeError, IOError, ValueError) as e:
         # If loading fails, return default config
-        default_config = {
-            "database_url": "https://www.notion.so/new",
-            "default_open_method": "web"
-        }
-        return default_config
+        # Log the error silently and proceed with defaults
+        return create_default_config()
 
 
-def save_config(config):
-    """Saves the configuration to the JSON file."""
+def save_config(config: Dict[str, str]) -> bool:
+    """
+    Saves the configuration to the JSON file.
+
+    Writes the configuration dictionary to the JSON file with proper formatting
+    for human readability. The file is created if it doesn't exist.
+
+    Args:
+        config (Dict[str, str]): Configuration dictionary to save
+
+    Returns:
+        bool: True if save was successful, False otherwise
+
+    Example:
+        >>> config = {'database_url': 'https://...', 'default_open_method': 'web'}
+        >>> success = save_config(config)
+        >>> print(success)
+        True
+    """
     config_path = get_config_path()
+
     try:
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
         return True
-    except Exception:
+
+    except (IOError, TypeError) as e:
+        # Save failed - return False to indicate failure
         return False
 
 
-def get_notion_url(protocol='https'):
-    """Gets the appropriate Notion URL based on configuration."""
+# ============================================================================
+# NOTION URL GENERATION
+# ============================================================================
+
+def get_notion_url(protocol: str = 'https') -> str:
+    """
+    Generates the appropriate Notion URL based on configuration and protocol.
+
+    This function reads the user's configured database URL and converts it to
+    the appropriate format based on the requested protocol. For the 'notion'
+    protocol (desktop app), it converts https:// URLs to notion:// URLs.
+
+    Args:
+        protocol (str): The URL protocol to use. Options are:
+                       - 'https': For web browser access
+                       - 'notion': For desktop app access
+
+    Returns:
+        str: The formatted Notion URL ready to be opened
+
+    Example:
+        >>> web_url = get_notion_url('https')
+        >>> print(web_url)
+        'https://www.notion.so/database/...'
+
+        >>> desktop_url = get_notion_url('notion')
+        >>> print(desktop_url)
+        'notion://www.notion.so/database/...'
+    """
     config = load_config()
     database_url = config.get('database_url', '').strip()
 
+    # Return configured database URL or default based on protocol
     if database_url:
-        # User has configured a database URL
+        # User has configured a custom database URL
         if protocol == 'notion':
-            # Convert https:// to notion://
+            # Convert web URL to desktop app protocol
             if database_url.startswith('https://'):
                 return database_url.replace('https://', 'notion://', 1)
             elif database_url.startswith('http://'):
                 return database_url.replace('http://', 'notion://', 1)
-        return database_url
+            # If already notion://, return as-is
+            return database_url
+        else:
+            # Return web URL as-is
+            return database_url
     else:
-        # No database configured, use default new page URL
+        # No database configured - use default new page URL
         if protocol == 'notion':
             return 'notion://www.notion.so/new'
         else:
-            return 'https://www.notion.so/new'
+            return DEFAULT_NOTION_URL
 
 
-def show_error_message(ui, error_message):
-    """Displays an error message dialog to the user."""
-    if ui:
-        ui.messageBox(error_message, ADDIN_NAME, 0, 0)
+# ============================================================================
+# NOTION DESKTOP APP DETECTION
+# ============================================================================
 
+def check_notion_protocol_handler() -> bool:
+    """
+    Checks if the Notion desktop app protocol handler (notion://) is available.
 
-def check_notion_protocol_handler():
-    """Checks if the Notion protocol handler (notion://) is available.
-    
+    This function performs platform-specific checks to determine if the Notion
+    desktop application is installed and has registered its protocol handler:
+
+    - Windows: Queries the registry for the notion:// protocol registration
+    - macOS/Linux: Assumes protocol might exist (webbrowser will handle errors)
+
     Returns:
-        True if protocol handler exists, False otherwise
+        bool: True if protocol handler is detected, False otherwise
+
+    Platform-specific behavior:
+        - Windows: Uses 'reg query' to check HKEY_CLASSES_ROOT\notion
+        - macOS: Returns True (protocol detection not easily available)
+        - Linux: Returns True (protocol detection not easily available)
+
+    Example:
+        >>> has_desktop_app = check_notion_protocol_handler()
+        >>> if has_desktop_app:
+        ...     print("Notion desktop app is installed")
+        ... else:
+        ...     print("Notion desktop app not found")
     """
     try:
         if platform.system() == 'Windows':
-            # On Windows, check registry for notion:// protocol handler
+            # Windows: Check registry for notion:// protocol handler
             try:
-                # Use reg query to check if notion protocol is registered
+                # Query the Windows registry for the Notion protocol key
                 result = subprocess.run(
-                    ['reg', 'query', 'HKEY_CLASSES_ROOT\\notion', '/ve'],
+                    ['reg', 'query', WINDOWS_REGISTRY_NOTION_KEY, '/ve'],
                     capture_output=True,
-                    timeout=2,
+                    timeout=REGISTRY_QUERY_TIMEOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
                 )
+                # Return True if registry key exists (returncode == 0)
                 return result.returncode == 0
-            except Exception:
-                # If registry check fails, assume protocol might not exist
+
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+                # If registry check fails, assume protocol doesn't exist
                 return False
         else:
-            # On macOS/Linux, we can't easily check, so assume it might exist
-            # The webbrowser module will handle it
+            # macOS/Linux: Cannot easily check for protocol handler
+            # Return True and let webbrowser module handle any errors
             return True
+
     except Exception:
+        # If anything unexpected happens, return False to be safe
         return False
 
 
-def open_notion_with_fallback(protocol='https', ui=None):
-    """Opens Notion URL with fallback to web if desktop app is not available.
-    
+# ============================================================================
+# NOTION OPENING WITH FALLBACK
+# ============================================================================
+
+def open_notion_with_fallback(protocol: str = 'https', ui: Optional[adsk.core.UserInterface] = None) -> bool:
+    """
+    Opens Notion URL with automatic fallback to web browser if desktop app fails.
+
+    This function provides a robust way to open Notion pages with intelligent
+    fallback behavior. When the desktop app is requested but unavailable, it
+    automatically falls back to the web browser and notifies the user.
+
     Args:
-        protocol: 'notion' for desktop app, 'https' for web browser
-        ui: User interface object for showing messages (optional)
-    
+        protocol (str): The protocol to use for opening Notion:
+                       - 'notion': Attempt to use desktop app (with fallback)
+                       - 'https': Use web browser directly
+        ui (Optional[adsk.core.UserInterface]): User interface object for
+                                                displaying messages. Can be None.
+
     Returns:
-        True if opened successfully, False otherwise
+        bool: True if opened successfully with requested method,
+              False if fallback was used or operation failed
+
+    Side Effects:
+        - Opens a new browser tab or desktop app window
+        - May display a message box to user if fallback occurs
+
+    Example:
+        >>> # Try to open in desktop app
+        >>> success = open_notion_with_fallback('notion', ui)
+        >>> if not success:
+        ...     print("Fell back to web browser")
+
+        >>> # Open directly in web browser
+        >>> open_notion_with_fallback('https', ui)
     """
     try:
         url = get_notion_url(protocol=protocol)
-        
+
         if protocol == 'notion':
-            # Check if protocol handler exists before trying
+            # Desktop app mode - check if protocol handler exists
             if not check_notion_protocol_handler():
-                # Protocol handler doesn't exist, fall back to web browser
-                web_url = get_notion_url(protocol='https')
-                webbrowser.open_new(web_url)
-                if ui:
-                    ui.messageBox(
-                        'Notion desktop app not found. Opened in web browser instead.',
-                        ADDIN_NAME,
-                        0,  # OK button only
-                        0   # Information icon
-                    )
-                return False
-            
-            # Try to open with desktop app
+                # Protocol handler not found - fall back to web browser
+                return _fallback_to_web_browser(
+                    'Notion desktop app not found. Opened in web browser instead.',
+                    ui
+                )
+
+            # Protocol handler exists - try to open desktop app
             try:
-                result = webbrowser.open(url)
-                
-                # On some systems, webbrowser.open() might return False on failure
-                # But on Windows, it often returns True even if protocol handler doesn't work well
-                # So we rely on the registry check above
+                webbrowser.open(url)
                 return True
-                
+
             except Exception:
-                # If opening fails, fall back to web browser
-                web_url = get_notion_url(protocol='https')
-                webbrowser.open_new(web_url)
-                if ui:
-                    ui.messageBox(
-                        'Could not open Notion desktop app. Opened in web browser instead.',
-                        ADDIN_NAME,
-                        0,  # OK button only
-                        0   # Information icon
-                    )
-                return False
+                # Opening desktop app failed - fall back to web browser
+                return _fallback_to_web_browser(
+                    'Could not open Notion desktop app. Opened in web browser instead.',
+                    ui
+                )
         else:
-            # Open in web browser
+            # Web browser mode - open directly
             webbrowser.open_new(url)
             return True
-            
+
     except Exception as e:
-        # If everything fails, try web browser as last resort
-        try:
-            web_url = get_notion_url(protocol='https')
-            webbrowser.open_new(web_url)
-            if ui and protocol == 'notion':
-                ui.messageBox(
-                    'Could not open Notion desktop app. Opened in web browser instead.',
-                    ADDIN_NAME,
-                    0,
-                    0
-                )
-        except Exception:
-            pass  # If even web browser fails, we're out of options
+        # Last resort fallback - try web browser one final time
+        return _fallback_to_web_browser(
+            'Could not open Notion desktop app. Opened in web browser instead.',
+            ui,
+            show_message=(protocol == 'notion')
+        )
+
+
+def _fallback_to_web_browser(message: str, ui: Optional[adsk.core.UserInterface], show_message: bool = True) -> bool:
+    """
+    Internal helper function to fall back to web browser with user notification.
+
+    This function is called when the desktop app cannot be opened. It opens the
+    web browser as a fallback and optionally displays a message to the user.
+
+    Args:
+        message (str): The message to display to the user
+        ui (Optional[adsk.core.UserInterface]): User interface for message display
+        show_message (bool): Whether to show the message box to the user
+
+    Returns:
+        bool: False to indicate fallback was used (not the requested method)
+
+    Side Effects:
+        - Opens web browser with Notion URL
+        - May display a message box to the user
+    """
+    try:
+        web_url = get_notion_url(protocol='https')
+        webbrowser.open_new(web_url)
+
+        # Show informational message to user if UI is available
+        if ui and show_message:
+            ui.messageBox(
+                message,
+                ADDIN_NAME,
+                MSG_BOX_OK_ONLY,
+                MSG_BOX_INFO_ICON
+            )
+
+        return False  # Return False because we used fallback, not requested method
+
+    except Exception:
+        # If even web browser fails, return False silently
         return False
 
 
 # ============================================================================
-# PALETTE HANDLER
+# USER INTERFACE HELPERS
+# ============================================================================
+
+def show_error_message(ui: Optional[adsk.core.UserInterface], error_message: str) -> None:
+    """
+    Displays an error message dialog to the user.
+
+    This function provides a consistent way to show error messages throughout
+    the add-in. It safely handles cases where the UI object is not available.
+
+    Args:
+        ui (Optional[adsk.core.UserInterface]): User interface object for
+                                                displaying the message. Can be None.
+        error_message (str): The error message to display to the user
+
+    Side Effects:
+        - Displays a modal message box with the error message
+
+    Example:
+        >>> try:
+        ...     risky_operation()
+        ... except Exception as e:
+        ...     show_error_message(ui, f"Operation failed: {str(e)}")
+    """
+    if ui:
+        ui.messageBox(error_message, ADDIN_NAME, MSG_BOX_OK_ONLY, MSG_BOX_INFO_ICON)
+
+
+def send_config_to_palette(palette_instance: adsk.core.Palette) -> None:
+    """
+    Sends the current configuration to the HTML palette.
+
+    This function updates the palette's UI with the current configuration values
+    by sending a JSON message to the HTML interface. It's used to populate the
+    settings form when the palette is opened.
+
+    Args:
+        palette_instance (adsk.core.Palette): The palette to send config to
+
+    Side Effects:
+        - Sends JSON data to the HTML palette via sendInfoToHTML
+
+    Example:
+        >>> send_config_to_palette(palette)
+        # Palette UI updates with current configuration
+    """
+    if palette_instance and palette_instance.isVisible:
+        try:
+            config = load_config()
+            config_data = json.dumps({
+                'action': 'setConfig',
+                'databaseUrl': config.get('database_url', ''),
+                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
+            })
+            palette_instance.sendInfoToHTML('setConfig', config_data)
+
+        except Exception:
+            # Silently fail if palette is not ready or communication fails
+            pass
+
+
+# ============================================================================
+# EVENT HANDLERS - PALETTE
 # ============================================================================
 
 class PaletteCommandHandler(adsk.core.HTMLEventHandler):
-    """Handles events from the HTML palette."""
+    """
+    Handles events and messages from the HTML palette.
 
-    def __init__(self, ui):
+    This handler receives messages sent from the JavaScript code in the palette's
+    HTML file. It processes different actions like getting/saving configuration,
+    and opening URLs.
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI for displaying messages
+
+    Supported Actions:
+        - 'getConfig': Requests current configuration to populate settings form
+        - 'savePreferences': Saves user's updated preferences to config file
+        - 'openNotionForUrl': Opens Notion website to help user get database URL
+        - 'openUrl': Opens an arbitrary URL in the browser
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the palette command handler.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
         super().__init__()
         self.ui = ui
 
-    def notify(self, args):
-        """Called when the HTML palette sends a message."""
+    def notify(self, args: adsk.core.HTMLEventArgs) -> None:
+        """
+        Called when the HTML palette sends a message to the add-in.
+
+        This method processes incoming messages from the palette's JavaScript
+        code and performs the appropriate actions based on the message type.
+
+        Args:
+            args (adsk.core.HTMLEventArgs): Event arguments containing the action
+                                           and data from the HTML palette
+
+        Side Effects:
+            - May modify configuration file
+            - May open browser windows
+            - May send data back to palette
+        """
         try:
             htmlArgs = adsk.core.HTMLEventArgs.cast(args)
             action = htmlArgs.action
 
             if action == 'getConfig':
-                # Send current configuration to the palette
+                # Return current configuration to the palette
                 config = load_config()
-                database_url = config.get('database_url', '')
-                default_method = config.get('default_open_method', 'web')
                 return_data = json.dumps({
                     'action': 'setConfig',
-                    'databaseUrl': database_url,
-                    'defaultMethod': default_method
+                    'databaseUrl': config.get('database_url', ''),
+                    'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
                 })
                 htmlArgs.returnData = return_data
-                # Also proactively send via sendInfoToHTML as backup
+
+                # Also send via sendInfoToHTML as backup method
                 try:
                     global palette
                     if palette and palette.isVisible:
@@ -279,313 +580,527 @@ class PaletteCommandHandler(adsk.core.HTMLEventHandler):
                     pass  # Silently fail if palette not ready
 
             elif action == 'savePreferences':
-                # Save preferences from the settings panel
+                # Save user's updated preferences from the settings panel
                 data = json.loads(htmlArgs.data) if htmlArgs.data else {}
                 config = load_config()
 
+                # Extract and validate new settings
                 database_url = data.get('databaseUrl', '').strip()
-                default_method = data.get('defaultMethod', 'web')
+                default_method = data.get('defaultMethod', DEFAULT_OPEN_METHOD)
 
+                # Update configuration
                 config['database_url'] = database_url
                 config['default_open_method'] = default_method
 
+                # Persist to file
                 save_config(config)
 
             elif action == 'openNotionForUrl':
-                # Open Notion in web browser so user can navigate and get database URL
+                # Open Notion website to help user navigate and get database URL
                 webbrowser.open_new('https://www.notion.so')
-            
+
             elif action == 'openUrl':
-                # Open a URL in the user's browser
+                # Open any URL in the user's browser (for help links, etc.)
                 url = htmlArgs.data if htmlArgs.data else ''
                 if url:
                     webbrowser.open_new(url)
 
         except Exception as e:
-            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
-
-
-# ============================================================================
-# COMMAND HANDLERS
-# ============================================================================
-
-class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
-    """Handles opening Notion directly from the QAT button."""
-
-    def __init__(self, ui):
-        super().__init__()
-        self.ui = ui
-
-    def notify(self, args):
-        """Called when the user clicks the Fusion Notion Notes button."""
-        try:
-            config = load_config()
-            default_method = config.get('default_open_method', 'web')
-
-            if default_method == 'desktop':
-                # Try desktop app with fallback to web
-                open_notion_with_fallback(protocol='notion', ui=self.ui)
-            else:
-                # Open in web browser
-                open_notion_with_fallback(protocol='https', ui=self.ui)
-
-        except Exception as e:
-            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
-
-
-def send_config_to_palette(palette_instance):
-    """Helper function to send current config to the palette."""
-    if palette_instance and palette_instance.isVisible:
-        try:
-            config = load_config()
-            database_url = config.get('database_url', '')
-            default_method = config.get('default_open_method', 'web')
-            config_data = json.dumps({
-                'action': 'setConfig',
-                'databaseUrl': database_url,
-                'defaultMethod': default_method
-            })
-            palette_instance.sendInfoToHTML('setConfig', config_data)
-        except Exception:
-            pass  # Silently fail if palette is not ready
+            # Display error to user if something goes wrong
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(self.ui, error_msg)
 
 
 class PaletteClosedHandler(adsk.core.UserInterfaceGeneralEventHandler):
-    """Handles palette closed events - when reopened, config will be sent."""
-    
-    def __init__(self, ui):
+    """
+    Handles events when the palette is closed by the user.
+
+    This handler is notified when the palette's close button is clicked or when
+    it's programmatically closed. Currently a placeholder for future functionality.
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the palette closed handler.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
         super().__init__()
         self.ui = ui
-    
-    def notify(self, args):
-        """Called when palette is closed."""
+
+    def notify(self, args: adsk.core.UserInterfaceGeneralEventArgs) -> None:
+        """
+        Called when the palette is closed.
+
+        Currently a no-op as the configuration is sent when palette reopens.
+
+        Args:
+            args (adsk.core.UserInterfaceGeneralEventArgs): Event arguments
+        """
         try:
-            # When palette is closed, we don't need to do anything
-            # Config will be sent when it's reopened via NotionSettingsHandler
+            # When palette is closed, no action needed
+            # Config will be sent fresh when it's reopened
             pass
         except Exception:
-            pass  # Silently fail
+            # Silently fail - closing should always succeed
+            pass
+
+
+# ============================================================================
+# EVENT HANDLERS - COMMANDS
+# ============================================================================
+
+class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
+    """
+    Handles the execution of the Quick Access Toolbar button click.
+
+    This handler is triggered when the user clicks the "Fusion Notion Notes"
+    button in the QAT. It reads the user's preferred open method and opens
+    Notion accordingly (desktop app or web browser).
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the quick open handler.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
+        super().__init__()
+        self.ui = ui
+
+    def notify(self, args: adsk.core.CommandEventArgs) -> None:
+        """
+        Called when the user clicks the Fusion Notion Notes button in the QAT.
+
+        This method loads the user's configuration and opens Notion using their
+        preferred method (desktop app or web browser) with automatic fallback.
+
+        Args:
+            args (adsk.core.CommandEventArgs): Command execution event arguments
+
+        Side Effects:
+            - Opens Notion in web browser or desktop app
+            - May display a message if fallback occurs
+        """
+        try:
+            config = load_config()
+            default_method = config.get('default_open_method', DEFAULT_OPEN_METHOD)
+
+            if default_method == 'desktop':
+                # Try desktop app with automatic fallback to web browser
+                open_notion_with_fallback(protocol='notion', ui=self.ui)
+            else:
+                # Open directly in web browser
+                open_notion_with_fallback(protocol='https', ui=self.ui)
+
+        except Exception as e:
+            # Display error message if something goes wrong
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(self.ui, error_msg)
 
 
 class NotionSettingsHandler(adsk.core.CommandEventHandler):
-    """Handles showing the settings palette."""
+    """
+    Handles showing and hiding the settings palette.
 
-    def __init__(self, ui):
+    This handler is triggered when the user clicks the "Fusion Notion Notes Settings"
+    command in the Scripts menu. It manages the palette lifecycle including creation,
+    visibility toggling, and configuration updates.
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the settings handler.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
         super().__init__()
         self.ui = ui
 
-    def notify(self, args):
-        """Called when the user clicks the settings command."""
+    def notify(self, args: adsk.core.CommandEventArgs) -> None:
+        """
+        Called when the user clicks the settings command in the Scripts menu.
+
+        This method manages the settings palette by toggling its visibility if it
+        exists, or creating it if it doesn't. When shown, it sends the current
+        configuration to populate the form.
+
+        Args:
+            args (adsk.core.CommandEventArgs): Command execution event arguments
+
+        Side Effects:
+            - Creates palette HTML window if needed
+            - Toggles palette visibility
+            - Sends configuration data to palette
+            - Registers event handlers for palette communication
+        """
         try:
             global palette
 
             if palette:
-                # Toggle palette visibility
+                # Toggle palette visibility if it already exists
                 was_visible = palette.isVisible
                 palette.isVisible = not was_visible
-                # If palette is now visible, send config
+
+                # Send fresh config when showing palette
                 if palette.isVisible:
                     send_config_to_palette(palette)
             else:
-                # Create the palette if it doesn't exist
+                # Create the palette for the first time
                 palette = self.ui.palettes.itemById(PALETTE_ID)
+
                 if not palette:
-                    # Get the HTML file path
-                    addin_dir = os.path.dirname(os.path.realpath(__file__))
-                    html_file = os.path.join(addin_dir, 'palette.html')
-
-                    # Convert Windows path to file:// URL format
-                    # Replace backslashes with forward slashes for file:// URL
-                    html_file_url = html_file.replace('\\', '/')
-
-                    # Create the palette
-                    palette = self.ui.palettes.add(
-                        PALETTE_ID,
-                        'Fusion Notion Notes Settings',
-                        html_file_url,
-                        True,  # Show palette
-                        True,  # Show close button
-                        True,  # Can be resized
-                        720,   # Width
-                        900    # Height
-                    )
-
-                    # Add HTML event handler
-                    onHTML = PaletteCommandHandler(self.ui)
-                    palette.incomingFromHTML.add(onHTML)
-                    handlers.append(onHTML)
-
-                    # Add closed event handler to detect visibility changes
-                    onClosed = PaletteClosedHandler(self.ui)
-                    palette.closed.add(onClosed)
-                    handlers.append(onClosed)
-
-                    # Dock the palette to the right side
-                    palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
-
-                    # Send initial config to palette immediately and after delays to ensure HTML is ready
-                    send_config_to_palette(palette)
-                    # Also send after short delays to ensure HTML has loaded
-                    def send_config_delayed():
-                        send_config_to_palette(palette)
-                    # Use a timer to send config after HTML loads (Autodesk Fusion doesn't have threading, so we'll rely on multiple sends)
-                    # The HTML will handle duplicate configs gracefully
+                    # Palette doesn't exist - create it
+                    palette = self._create_palette()
                 else:
+                    # Palette exists but was hidden - show it
                     palette.isVisible = True
-                    # Send config when showing existing palette
                     send_config_to_palette(palette)
 
         except Exception as e:
-            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
+            # Display error message if palette creation/toggle fails
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(self.ui, error_msg)
+
+    def _create_palette(self) -> adsk.core.Palette:
+        """
+        Creates and configures the HTML-based settings palette.
+
+        This internal method handles the complete palette creation process including:
+        - Loading the HTML file
+        - Setting up event handlers
+        - Configuring palette properties (size, docking, etc.)
+        - Sending initial configuration data
+
+        Returns:
+            adsk.core.Palette: The newly created palette instance
+
+        Side Effects:
+            - Creates new palette window
+            - Registers event handlers (stored in global handlers list)
+            - Sends initial configuration to HTML
+        """
+        # Get the HTML file path
+        addin_dir = os.path.dirname(os.path.realpath(__file__))
+        html_file = os.path.join(addin_dir, 'palette.html')
+
+        # Convert Windows backslashes to forward slashes for file:// URL
+        html_file_url = html_file.replace('\\', '/')
+
+        # Create the palette with configured properties
+        new_palette = self.ui.palettes.add(
+            PALETTE_ID,
+            'Fusion Notion Notes Settings',
+            html_file_url,
+            True,  # Show palette immediately
+            True,  # Show close button
+            True,  # Can be resized by user
+            PALETTE_WIDTH,
+            PALETTE_HEIGHT
+        )
+
+        # Register HTML event handler for palette communication
+        on_html = PaletteCommandHandler(self.ui)
+        new_palette.incomingFromHTML.add(on_html)
+        handlers.append(on_html)
+
+        # Register closed event handler
+        on_closed = PaletteClosedHandler(self.ui)
+        new_palette.closed.add(on_closed)
+        handlers.append(on_closed)
+
+        # Set palette to float (not docked to any side)
+        new_palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+
+        # Send initial configuration to populate the form
+        send_config_to_palette(new_palette)
+
+        return new_palette
 
 
 class NotionQuickOpenCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
-    """Handles the creation of the Notion Quick Open command (QAT button)."""
+    """
+    Handles the creation of the Quick Access Toolbar button command.
 
-    def __init__(self, ui):
+    This handler is called when the QAT button command definition is created.
+    It's responsible for attaching the execute handler that runs when the button
+    is clicked.
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the command created handler for QAT button.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
         super().__init__()
         self.ui = ui
 
-    def notify(self, args):
-        """Called when the command is created."""
+    def notify(self, args: adsk.core.CommandCreatedEventArgs) -> None:
+        """
+        Called when the QAT button command is created.
+
+        Attaches the execute handler that will run when the button is clicked.
+
+        Args:
+            args (adsk.core.CommandCreatedEventArgs): Command creation event arguments
+
+        Side Effects:
+            - Attaches execute handler to command
+            - Stores handler in global list to prevent garbage collection
+        """
         try:
             command = args.command
 
-            # Add execute handler
-            onExecute = NotionQuickOpenHandler(self.ui)
-            command.execute.add(onExecute)
-            handlers.append(onExecute)
+            # Attach execute handler for button clicks
+            on_execute = NotionQuickOpenHandler(self.ui)
+            command.execute.add(on_execute)
+            handlers.append(on_execute)
 
         except Exception as e:
-            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
+            # Display error message if handler attachment fails
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(self.ui, error_msg)
 
 
 class NotionSettingsCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
-    """Handles the creation of the Notion Settings command."""
+    """
+    Handles the creation of the Settings command.
 
-    def __init__(self, ui):
+    This handler is called when the settings command definition is created.
+    It's responsible for attaching the execute handler that runs when the
+    settings menu item is clicked.
+
+    Attributes:
+        ui (adsk.core.UserInterface): Reference to the Fusion UI
+    """
+
+    def __init__(self, ui: adsk.core.UserInterface):
+        """
+        Initialize the command created handler for settings command.
+
+        Args:
+            ui (adsk.core.UserInterface): The Fusion user interface object
+        """
         super().__init__()
         self.ui = ui
 
-    def notify(self, args):
-        """Called when the command is created."""
+    def notify(self, args: adsk.core.CommandCreatedEventArgs) -> None:
+        """
+        Called when the settings command is created.
+
+        Attaches the execute handler that will run when the command is executed.
+
+        Args:
+            args (adsk.core.CommandCreatedEventArgs): Command creation event arguments
+
+        Side Effects:
+            - Attaches execute handler to command
+            - Stores handler in global list to prevent garbage collection
+        """
         try:
             command = args.command
 
-            # Add execute handler
-            onExecute = NotionSettingsHandler(self.ui)
-            command.execute.add(onExecute)
-            handlers.append(onExecute)
+            # Attach execute handler for command execution
+            on_execute = NotionSettingsHandler(self.ui)
+            command.execute.add(on_execute)
+            handlers.append(on_execute)
 
         except Exception as e:
-            show_error_message(self.ui, ERROR_MSG.format(traceback.format_exc()))
+            # Display error message if handler attachment fails
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(self.ui, error_msg)
 
 
 # ============================================================================
-# MAIN ADD-IN FUNCTIONS
+# ADD-IN LIFECYCLE FUNCTIONS
 # ============================================================================
 
-def run(context):
-    """Entry point for the Autodesk Fusion add-in."""
+def run(context: Dict[str, Any]) -> None:
+    """
+    Entry point for the Autodesk Fusion add-in.
+
+    This function is called by Fusion when the add-in is loaded. It sets up
+    all UI elements including:
+    - Quick Access Toolbar button for quick Notion access
+    - Settings command in the Scripts menu
+    - Event handlers for all commands
+
+    The function is designed to be idempotent and handles errors gracefully.
+
+    Args:
+        context (Dict[str, Any]): Context dictionary provided by Fusion
+
+    Side Effects:
+        - Creates command definitions
+        - Adds buttons to QAT and Scripts menu
+        - Registers event handlers (stored in global handlers list)
+
+    Example:
+        This function is called automatically by Fusion, not by user code.
+    """
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
 
-        # Get reference to the Quick Access Toolbar
-        qatToolbar = ui.toolbars.itemById('QAT')
+        # ====================================================================
+        # QUICK ACCESS TOOLBAR BUTTON
+        # ====================================================================
 
-        # Create QAT command (quick open button)
+        # Get reference to the Quick Access Toolbar
+        qat_toolbar = ui.toolbars.itemById('QAT')
+
+        # Create command definition for QAT button
         qat_command_id = f'{ADDIN_NAME}CmdDef'
-        notionQuickOpenCmdDef = ui.commandDefinitions.addButtonDefinition(
+        notion_quick_open_cmd = ui.commandDefinitions.addButtonDefinition(
             qat_command_id,
             ADDIN_NAME,
             'Create a new Notion page',
-            './resources'
+            './resources'  # Icon directory
         )
 
-        # Create and attach command created handler for QAT button
-        onQuickOpenCreated = NotionQuickOpenCommandCreatedHandler(ui)
-        notionQuickOpenCmdDef.commandCreated.add(onQuickOpenCreated)
-        handlers.append(onQuickOpenCreated)
+        # Attach command created handler
+        on_quick_open_created = NotionQuickOpenCommandCreatedHandler(ui)
+        notion_quick_open_cmd.commandCreated.add(on_quick_open_created)
+        handlers.append(on_quick_open_created)
 
-        # Add the quick open button to the Quick Access Toolbar
-        qatToolbar.controls.addCommand(notionQuickOpenCmdDef, 'HealthStatusCommand', False)
+        # Add button to Quick Access Toolbar (after Health Status if possible)
+        qat_toolbar.controls.addCommand(notion_quick_open_cmd, 'HealthStatusCommand', False)
 
-        # Create Settings command for Scripts menu
-        notionSettingsCmdDef = ui.commandDefinitions.addButtonDefinition(
+        # ====================================================================
+        # SETTINGS COMMAND (SCRIPTS MENU)
+        # ====================================================================
+
+        # Create command definition for settings
+        notion_settings_cmd = ui.commandDefinitions.addButtonDefinition(
             SETTINGS_CMD_ID,
             'Fusion Notion Notes Settings',
             'Configure Notion database and default open method',
-            './resources'
+            './resources'  # Icon directory
         )
 
-        # Create and attach command created handler for settings
-        onSettingsCreated = NotionSettingsCommandCreatedHandler(ui)
-        notionSettingsCmdDef.commandCreated.add(onSettingsCreated)
-        handlers.append(onSettingsCreated)
+        # Attach command created handler
+        on_settings_created = NotionSettingsCommandCreatedHandler(ui)
+        notion_settings_cmd.commandCreated.add(on_settings_created)
+        handlers.append(on_settings_created)
 
-        # Add settings to the ADD-INS panel in UTILITIES toolbar
+        # Add settings command to ADD-INS panel in UTILITIES toolbar
         workspace = ui.workspaces.itemById('FusionSolidEnvironment')
         if workspace:
-            addInsPanel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
-            if addInsPanel:
-                control = addInsPanel.controls.addCommand(notionSettingsCmdDef)
-                # Check if control is a dropdown and disable it
-                if control:
-                    try:
-                        # Try to access dropdown-specific properties
-                        if hasattr(control, 'isDropDown'):
-                            control.isDropDown = False
-                    except:
-                        pass
+            addins_panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+            if addins_panel:
+                control = addins_panel.controls.addCommand(notion_settings_cmd)
+
+                # Ensure control is not a dropdown
+                if control and hasattr(control, 'isDropDown'):
+                    control.isDropDown = False
 
     except Exception as e:
+        # Display error message if add-in initialization fails
         if ui:
-            show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(ui, error_msg)
 
 
-def stop(context):
-    """Cleanup function called when the add-in is stopped."""
+def stop(context: Dict[str, Any]) -> None:
+    """
+    Cleanup function called when the add-in is stopped or unloaded.
+
+    This function performs comprehensive cleanup of all UI elements and event
+    handlers created by the add-in. It ensures that Fusion returns to its
+    original state with no remnants of the add-in left behind.
+
+    Cleanup includes:
+    - Removing and deleting the settings palette
+    - Removing QAT button and its command definition
+    - Removing settings command from Scripts menu
+    - Clearing all event handlers
+
+    Args:
+        context (Dict[str, Any]): Context dictionary provided by Fusion
+
+    Side Effects:
+        - Deletes UI controls and command definitions
+        - Clears global event handler list
+        - Closes and deletes palette if open
+
+    Example:
+        This function is called automatically by Fusion, not by user code.
+    """
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
 
-        # Hide and delete the palette
+        # ====================================================================
+        # CLEANUP PALETTE
+        # ====================================================================
+
         global palette
         if palette:
             palette.deleteMe()
             palette = None
 
-        # Get reference to the Quick Access Toolbar
-        qatToolbar = ui.toolbars.itemById('QAT')
+        # ====================================================================
+        # CLEANUP QUICK ACCESS TOOLBAR BUTTON
+        # ====================================================================
 
-        # Delete QAT command
+        qat_toolbar = ui.toolbars.itemById('QAT')
         qat_command_id = f'{ADDIN_NAME}CmdDef'
-        cmdDef = ui.commandDefinitions.itemById(qat_command_id)
-        if cmdDef:
-            cmdDef.deleteMe()
 
-        cmd = qatToolbar.controls.itemById(qat_command_id)
-        if cmd:
-            cmd.deleteMe()
+        # Remove command definition
+        cmd_def = ui.commandDefinitions.itemById(qat_command_id)
+        if cmd_def:
+            cmd_def.deleteMe()
 
-        # Delete Settings command
-        settingsCmdDef = ui.commandDefinitions.itemById(SETTINGS_CMD_ID)
-        if settingsCmdDef:
-            settingsCmdDef.deleteMe()
+        # Remove control from QAT
+        cmd_control = qat_toolbar.controls.itemById(qat_command_id)
+        if cmd_control:
+            cmd_control.deleteMe()
+
+        # ====================================================================
+        # CLEANUP SETTINGS COMMAND
+        # ====================================================================
+
+        # Remove settings command definition
+        settings_cmd_def = ui.commandDefinitions.itemById(SETTINGS_CMD_ID)
+        if settings_cmd_def:
+            settings_cmd_def.deleteMe()
 
         # Remove from ADD-INS panel
         workspace = ui.workspaces.itemById('FusionSolidEnvironment')
         if workspace:
-            addInsPanel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
-            if addInsPanel:
-                settingsControl = addInsPanel.controls.itemById(SETTINGS_CMD_ID)
-                if settingsControl:
-                    settingsControl.deleteMe()
+            addins_panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+            if addins_panel:
+                settings_control = addins_panel.controls.itemById(SETTINGS_CMD_ID)
+                if settings_control:
+                    settings_control.deleteMe()
 
-        # Clear handlers
+        # ====================================================================
+        # CLEANUP EVENT HANDLERS
+        # ====================================================================
+
+        # Clear all handlers to allow garbage collection
         handlers.clear()
 
-    except:
+    except Exception:
+        # Silently fail during cleanup to avoid blocking Fusion shutdown
+        # Log to Fusion's text commands window if available
         if ui:
-            show_error_message(ui, ERROR_MSG.format(traceback.format_exc()))
+            error_msg = ERROR_MSG_TEMPLATE.format(traceback.format_exc())
+            show_error_message(ui, error_msg)
