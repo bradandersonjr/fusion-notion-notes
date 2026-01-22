@@ -80,8 +80,8 @@ DEFAULT_NOTION_URL = 'https://www.notion.so/new'
 DEFAULT_OPEN_METHOD = 'web'
 
 # UI dimensions
-PALETTE_WIDTH = 720
-PALETTE_HEIGHT = 900
+PALETTE_WIDTH = 4000
+PALETTE_HEIGHT = 4000
 
 # Message box constants
 MSG_BOX_OK_ONLY = 0
@@ -596,8 +596,18 @@ class PaletteCommandHandler(adsk.core.HTMLEventHandler):
                 save_config(config)
 
             elif action == 'openNotionForUrl':
-                # Open Notion website to help user navigate and get database URL
-                webbrowser.open_new('https://www.notion.so')
+                # Open Notion to help user navigate and get database URL
+                # Try desktop app first, fall back to web browser if not available
+                try:
+                    if check_notion_protocol_handler():
+                        # Desktop app is available - open in desktop
+                        webbrowser.open('notion://www.notion.so')
+                    else:
+                        # Desktop app not available - open in web browser
+                        webbrowser.open_new('https://www.notion.so')
+                except Exception:
+                    # If anything fails, fall back to web browser
+                    webbrowser.open_new('https://www.notion.so')
 
             elif action == 'openUrl':
                 # Open any URL in the user's browser (for help links, etc.)
@@ -811,7 +821,7 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
         """
         # Get the HTML file path
         addin_dir = os.path.dirname(os.path.realpath(__file__))
-        
+
         # Find the HTML file (case-insensitive on Windows)
         html_file = None
         possible_names = ['Palette.html', 'palette.html', 'PALETTE.HTML']
@@ -820,7 +830,7 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
             if os.path.exists(test_path):
                 html_file = test_path
                 break
-        
+
         # Fallback to default if not found
         if not html_file:
             html_file = os.path.join(addin_dir, 'Palette.html')
@@ -881,8 +891,8 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
         new_palette.closed.add(on_closed)
         handlers.append(on_closed)
 
-        # Set palette to float (not docked to any side)
-        new_palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+        # Set palette to dock at the top
+        new_palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateTop
 
         # Send initial configuration to populate the form
         send_config_to_palette(new_palette)

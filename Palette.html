@@ -33,6 +33,7 @@
                     id="databaseUrlInput"
                     class="w-full h-11 px-4 pr-11 border-2 border-gray-200 rounded-lg text-sm text-gray-900 bg-white transition-all focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-gray-900 placeholder:text-gray-400"
                     placeholder="Paste your Notion database URL here..."
+                    autofocus
                 />
                 <button
                     onclick="clearUrl()"
@@ -63,7 +64,6 @@
                     <li>Paste the URL into the field above</li>
                 </ol>
             </div>
-            <p class="mt-2 text-xs text-gray-500">Optional: Leave empty to use your default Notion location</p>
         </div>
 
         <!-- Default Open Method Card -->
@@ -71,12 +71,12 @@
             <label class="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-3.5">
                 Default Open Method
             </label>
-            <div class="flex flex-col gap-2.5">
+            <div class="flex gap-2.5">
                 <button
                     type="button"
                     id="webButton"
                     onclick="selectMethod('web')"
-                    class="flex items-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800"
+                    class="flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800"
                 >
                     <i data-lucide="globe" class="w-4 h-4"></i>
                     <span class="text-sm font-semibold">Web Browser</span>
@@ -85,7 +85,7 @@
                     type="button"
                     id="desktopButton"
                     onclick="selectMethod('desktop')"
-                    class="flex items-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all"
+                    class="flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all"
                 >
                     <i data-lucide="monitor" class="w-4 h-4"></i>
                     <span class="text-sm font-semibold">Desktop App</span>
@@ -167,6 +167,24 @@
             loadConfigOnce();
         });
 
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', function(event) {
+            // Ctrl/Cmd+S to save
+            if (event.key === 's' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                savePreferences();
+            }
+            // Enter key to save
+            else if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+                const activeElement = document.activeElement;
+                // Only trigger save if not in a textarea and not clicking a button
+                if (activeElement.tagName !== 'BUTTON') {
+                    event.preventDefault();
+                    savePreferences();
+                }
+            }
+        });
+
         // Handle messages from Autodesk Fusion (via sendInfoToHTML)
         // In Fusion, sendInfoToHTML triggers a callback mechanism
         // We'll handle it through the setConfig function that Fusion can call directly
@@ -225,8 +243,6 @@
                 inputElement.value = url || '';
             }
 
-            // No current URL display
-
             // Update selected method
             if (method) {
                 selectedMethod = method;
@@ -245,12 +261,12 @@
 
             if (method === 'web') {
                 // Highlight web button
-                webButton.className = 'flex items-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800';
-                desktopButton.className = 'flex items-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all';
+                webButton.className = 'flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800';
+                desktopButton.className = 'flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all';
             } else {
                 // Highlight desktop button
-                webButton.className = 'flex items-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all';
-                desktopButton.className = 'flex items-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800';
+                webButton.className = 'flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-300 bg-white text-gray-900 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-gray-400 transition-all';
+                desktopButton.className = 'flex-1 flex items-center justify-center gap-3 p-3.5 border-2 border-gray-900 bg-gray-900 text-white rounded-lg cursor-pointer transition-all hover:bg-gray-800 hover:border-gray-800';
             }
 
             if (updateIcons) {
