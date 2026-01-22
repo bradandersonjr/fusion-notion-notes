@@ -692,7 +692,24 @@ class NotionQuickOpenHandler(adsk.core.CommandEventHandler):
         """
         try:
             config = load_config()
+            database_url = config.get('database_url', '').strip()
             default_method = config.get('default_open_method', DEFAULT_OPEN_METHOD)
+
+            if not database_url:
+                # No database URL configured - show settings palette instead
+                global palette
+                if palette:
+                    palette.isVisible = True
+                    send_config_to_palette(palette)
+                else:
+                    settings_handler = NotionSettingsHandler(self.ui)
+                    palette = self.ui.palettes.itemById(PALETTE_ID)
+                    if not palette:
+                        palette = settings_handler._create_palette()
+                    else:
+                        palette.isVisible = True
+                        send_config_to_palette(palette)
+                return
 
             if default_method == 'desktop':
                 # Try desktop app with automatic fallback to web browser
@@ -794,10 +811,53 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
         """
         # Get the HTML file path
         addin_dir = os.path.dirname(os.path.realpath(__file__))
-        html_file = os.path.join(addin_dir, 'palette.html')
+        
+        # Find the HTML file (case-insensitive on Windows)
+        html_file = None
+        possible_names = ['Palette.html', 'palette.html', 'PALETTE.HTML']
+        for name in possible_names:
+            test_path = os.path.join(addin_dir, name)
+            if os.path.exists(test_path):
+                html_file = test_path
+                break
+        
+        # Fallback to default if not found
+        if not html_file:
+            html_file = os.path.join(addin_dir, 'Palette.html')
 
-        # Convert Windows backslashes to forward slashes for file:// URL
-        html_file_url = html_file.replace('\\', '/')
+        # Create a temporary HTML file with injected config
+        temp_html_file = os.path.join(addin_dir, 'Palette_temp.html')
+
+        try:
+            # Read the template HTML
+            with open(html_file, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
+            # Load current config
+            config = load_config()
+            config_json = json.dumps({
+                'databaseUrl': config.get('database_url', ''),
+                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
+            })
+
+            # Inject config as a script tag right after <head>
+            injection = f'''<head>
+    <script>
+        window.FUSION_NOTION_CONFIG = {config_json};
+    </script>'''
+
+            html_content = html_content.replace('<head>', injection, 1)
+
+            # Write temporary HTML file
+            with open(temp_html_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+
+            html_file_url = temp_html_file.replace('\\', '/')
+
+        except Exception as e:
+            # If injection fails, fall back to original HTML
+            # But still try to send config via sendInfoToHTML
+            html_file_url = html_file.replace('\\', '/')
 
         # Create the palette with configured properties
         new_palette = self.ui.palettes.add(
@@ -1055,6 +1115,15 @@ def stop(context: Dict[str, Any]) -> None:
         if palette:
             palette.deleteMe()
             palette = None
+
+        # Clean up temporary HTML file
+        addin_dir = os.path.dirname(os.path.realpath(__file__))
+        temp_html_file = os.path.join(addin_dir, 'Palette_temp.html')
+        try:
+            if os.path.exists(temp_html_file):
+                os.remove(temp_html_file)
+        except Exception:
+            pass  # Silently fail if cleanup fails
 
         # ====================================================================
         # CLEANUP QUICK ACCESS TOOLBAR BUTTON

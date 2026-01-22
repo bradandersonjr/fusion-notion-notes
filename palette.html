@@ -12,14 +12,6 @@
             min-height: 100vh;
         }
 
-        .card-hover {
-            transition: all 0.2s ease-in-out;
-        }
-
-        .card-hover:hover {
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            transform: translateY(-1px);
-        }
     </style>
 </head>
 <body class="bg-gradient-to-b from-gray-50 to-white p-6">
@@ -31,7 +23,7 @@
         </div>
 
         <!-- Database URL Card -->
-        <div class="bg-white border border-gray-200 rounded-xl p-5 mb-4 shadow-sm card-hover">
+        <div class="bg-white border border-gray-200 rounded-xl p-5 mb-4 shadow-sm">
             <label class="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-2.5">
                 Database URL
             </label>
@@ -65,7 +57,7 @@
             <div class="mt-2.5 p-3 bg-gray-50 rounded-lg border border-gray-200">
                 <p class="text-xs font-semibold text-gray-700 mb-2">How to copy your database URL:</p>
                 <ol class="text-xs text-gray-600 space-y-1.5 list-decimal list-inside">
-                    <li>Open your Notion database</li>
+                    <li>Open your desired Notion database</li>
                     <li>Click on the <span class="font-medium">3 dots (⋯)</span> in the top right corner of the database</li>
                     <li>Select <span class="font-medium">"Copy Link"</span> from the menu</li>
                     <li>Paste the URL into the field above</li>
@@ -75,7 +67,7 @@
         </div>
 
         <!-- Default Open Method Card -->
-        <div class="bg-white border border-gray-200 rounded-xl p-5 mb-4 shadow-sm card-hover">
+        <div class="bg-white border border-gray-200 rounded-xl p-5 mb-4 shadow-sm">
             <label class="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-3.5">
                 Default Open Method
             </label>
@@ -132,114 +124,54 @@
 
         // Track selected method
         let selectedMethod = 'web';
+        const configState = { loaded: false, requested: false };
 
-        // Function to load configuration from Fusion
-        function loadConfig() {
+        function applyInjectedConfig() {
+            if (!window.FUSION_NOTION_CONFIG) {
+                return false;
+            }
+            updateSettings(
+                window.FUSION_NOTION_CONFIG.databaseUrl || '',
+                window.FUSION_NOTION_CONFIG.defaultMethod || 'web'
+            );
+            return true;
+        }
+
+        // Function to load configuration from Fusion only once per session
+        function loadConfigOnce() {
+            if (configState.loaded || configState.requested) {
+                return;
+            }
+
+            if (applyInjectedConfig()) {
+                return;
+            }
+
             // Request the current configuration from Fusion
             if (window.adsk && window.adsk.fusionSendData) {
                 try {
-                    const result = window.adsk.fusionSendData('getConfig', '');
-                    if (result) {
-                        try {
-                            let data;
-                            if (typeof result === 'string') {
-                                data = JSON.parse(result);
-                            } else {
-                                data = result;
-                            }
-                            if (data && (data.action === 'setConfig' || data.databaseUrl !== undefined)) {
-                                updateSettings(data.databaseUrl || '', data.defaultMethod || 'web');
-                                return true;
-                            }
-                        } catch (e) {
-                            // Try to parse as direct config object
-                            try {
-                                if (typeof result === 'string' && (result.includes('databaseUrl') || result.includes('defaultMethod'))) {
-                                    const data = JSON.parse(result);
-                                    updateSettings(data.databaseUrl || '', data.defaultMethod || 'web');
-                                    return true;
-                                }
-                            } catch (e2) {
-                                // Silently fail - will retry later
-                            }
-                        }
-                    }
+                    configState.requested = true;
+                    // Request config - this will trigger the Python handler
+                    window.adsk.fusionSendData('getConfig', '');
                 } catch (e) {
-                    // Silently fail - will retry later
+                    configState.requested = false;
                 }
             }
-            return false;
         }
 
-        // Load configuration on page load - be aggressive about it
+        // Load config from injected JavaScript variable immediately
+        applyInjectedConfig();
+
+        // Load configuration once on page load
         window.addEventListener('load', function() {
-            // Try multiple times to ensure config loads
-            loadConfig();
-            setTimeout(loadConfig, 50);
-            setTimeout(loadConfig, 100);
-            setTimeout(loadConfig, 250);
-            setTimeout(loadConfig, 500);
-            setTimeout(loadConfig, 1000);
-        });
-
-        // Also try immediately when script runs (in case load event already fired)
-        loadConfig();
-        setTimeout(loadConfig, 50);
-        setTimeout(loadConfig, 200);
-
-        // Load configuration when page becomes visible (palette is shown)
-        document.addEventListener('visibilitychange', function() {
-            if (!document.hidden) {
-                setTimeout(loadConfig, 100);
-            }
-        });
-
-        // Also load config when window gains focus (when palette is shown)
-        window.addEventListener('focus', function() {
-            setTimeout(loadConfig, 100);
-        });
-
-        // Poll for config when page is visible (in case other events don't fire)
-        let configCheckInterval = null;
-        function startConfigPolling() {
-            if (configCheckInterval) return;
-            configCheckInterval = setInterval(function() {
-                if (!document.hidden) {
-                    loadConfig();
-                }
-            }, 1000);
-        }
-        
-        function stopConfigPolling() {
-            if (configCheckInterval) {
-                clearInterval(configCheckInterval);
-                configCheckInterval = null;
-            }
-        }
-
-        // Start polling when page loads
-        window.addEventListener('load', function() {
-            startConfigPolling();
-        });
-
-        // Stop polling when page is hidden
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) {
-                stopConfigPolling();
-            } else {
-                startConfigPolling();
-                loadConfig();
-            }
+            loadConfigOnce();
         });
 
         // Handle messages from Autodesk Fusion (via sendInfoToHTML)
-        // This is the primary method Autodesk Fusion uses to send data to HTML palettes
-        if (window.adsk && window.adsk.fusionSendData) {
-            // Override or extend the message handling
-            const originalFusionSendData = window.adsk.fusionSendData;
-        }
-
-        // Handle messages from Autodesk Fusion via postMessage
+        // In Fusion, sendInfoToHTML triggers a callback mechanism
+        // We'll handle it through the setConfig function that Fusion can call directly
+        
+        // Handle messages from Autodesk Fusion via postMessage (backup method)
         window.addEventListener('message', function(event) {
             try {
                 let data;
@@ -261,7 +193,7 @@
                         }
                     }
                 } catch (e2) {
-                    console.error('Error processing message:', e2);
+                    // Silently fail
                 }
             }
         });
@@ -284,11 +216,16 @@
         };
 
         function updateSettings(url, method) {
+            configState.loaded = true;
+            configState.requested = false;
+
             // Update database URL input - always set the value, even if empty
             const inputElement = document.getElementById('databaseUrlInput');
             if (inputElement) {
                 inputElement.value = url || '';
             }
+
+            // No current URL display
 
             // Update selected method
             if (method) {
@@ -363,7 +300,8 @@
 
         function savePreferences() {
             const inputElement = document.getElementById('databaseUrlInput');
-            const url = inputElement ? inputElement.value.trim() : '';
+            const rawUrl = inputElement ? inputElement.value.trim() : '';
+            const url = sanitizeUrl(rawUrl);
 
             const preferences = {
                 databaseUrl: url,
@@ -371,6 +309,9 @@
             };
 
             if (window.adsk && window.adsk.fusionSendData) {
+                if (inputElement && url !== rawUrl) {
+                    inputElement.value = url;
+                }
                 window.adsk.fusionSendData('savePreferences', JSON.stringify(preferences));
 
                 // Show toast notification
@@ -380,6 +321,28 @@
                 } else {
                     showToast(`Settings saved! Default: ${methodText}`);
                 }
+            }
+        }
+
+        function sanitizeUrl(url) {
+            if (!url) {
+                return url;
+            }
+
+            try {
+                const parsed = new URL(url);
+                if (parsed.searchParams.get('source') === 'copy_link') {
+                    parsed.searchParams.delete('source');
+                    parsed.search = parsed.searchParams.toString();
+                }
+                return parsed.toString();
+            } catch (e) {
+                return url.replace(/([?&])source=copy_link(&?)/, function(match, leading, trailing) {
+                    if (leading === '?' && trailing) {
+                        return '?';
+                    }
+                    return '';
+                }).replace(/[?&]$/, '');
             }
         }
     </script>
