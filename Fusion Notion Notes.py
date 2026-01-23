@@ -80,8 +80,8 @@ DEFAULT_NOTION_URL = 'https://www.notion.so/new'
 DEFAULT_OPEN_METHOD = 'web'
 
 # UI dimensions
-PALETTE_WIDTH = 4000
-PALETTE_HEIGHT = 4000
+PALETTE_WIDTH = 560
+PALETTE_HEIGHT = 1080
 
 # Message box constants
 MSG_BOX_OK_ONLY = 0
@@ -335,6 +335,70 @@ def check_notion_protocol_handler() -> bool:
         return False
 
 
+def get_notion_desktop_path() -> Optional[str]:
+    """
+    Retrieves the file system path to the Notion desktop application executable.
+
+    This function queries platform-specific locations to find where the Notion
+    desktop app is installed. This is useful for displaying to users or for
+    diagnostics.
+
+    Returns:
+        Optional[str]: Path to Notion.exe (Windows) or app bundle (macOS/Linux),
+                      or None if not found or cannot be determined
+
+    Platform-specific behavior:
+        - Windows: Queries HKEY_CLASSES_ROOT\\notion\\shell\\open\\command
+        - macOS/Linux: Returns None (path detection not implemented)
+
+    Example:
+        >>> path = get_notion_desktop_path()
+        >>> if path:
+        ...     print(f"Notion Desktop found at: {path}")
+        ... else:
+        ...     print("Notion Desktop path not found")
+    """
+    try:
+        if platform.system() == 'Windows':
+            # Windows: Query registry for the command used to open notion:// URLs
+            try:
+                result = subprocess.run(
+                    ['reg', 'query', 'HKEY_CLASSES_ROOT\\notion\\shell\\open\\command', '/ve'],
+                    capture_output=True,
+                    timeout=REGISTRY_QUERY_TIMEOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+
+                if result.returncode == 0:
+                    # Parse the output to extract the executable path
+                    # Output format: "    (Default)    REG_SZ    "C:\Path\To\Notion.exe" "%1""
+                    output = result.stdout
+
+                    # Look for quoted path in the output
+                    import re
+                    match = re.search(r'REG_SZ\s+"([^"]+)"', output)
+                    if match:
+                        return match.group(1)
+
+                    # Fallback: try to extract any .exe path
+                    match = re.search(r'([A-Za-z]:\\[^"]+\.exe)', output)
+                    if match:
+                        return match.group(1)
+
+                return None
+
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+                return None
+        else:
+            # macOS/Linux: Path detection not implemented
+            # Could potentially check /Applications/Notion.app on macOS
+            return None
+
+    except Exception:
+        return None
+
+
 # ============================================================================
 # NOTION OPENING WITH FALLBACK
 # ============================================================================
@@ -497,10 +561,17 @@ def send_config_to_palette(palette_instance: adsk.core.Palette) -> None:
     if palette_instance and palette_instance.isVisible:
         try:
             config = load_config()
+
+            # Check for Notion Desktop installation
+            has_desktop = check_notion_protocol_handler()
+            desktop_path = get_notion_desktop_path() if has_desktop else None
+
             config_data = json.dumps({
                 'action': 'setConfig',
                 'databaseUrl': config.get('database_url', ''),
-                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
+                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD),
+                'hasDesktop': has_desktop,
+                'desktopPath': desktop_path
             })
             palette_instance.sendInfoToHTML('setConfig', config_data)
 
@@ -564,10 +635,17 @@ class PaletteCommandHandler(adsk.core.HTMLEventHandler):
             if action == 'getConfig':
                 # Return current configuration to the palette
                 config = load_config()
+
+                # Check for Notion Desktop installation
+                has_desktop = check_notion_protocol_handler()
+                desktop_path = get_notion_desktop_path() if has_desktop else None
+
                 return_data = json.dumps({
                     'action': 'setConfig',
                     'databaseUrl': config.get('database_url', ''),
-                    'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
+                    'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD),
+                    'hasDesktop': has_desktop,
+                    'desktopPath': desktop_path
                 })
                 htmlArgs.returnData = return_data
 
@@ -778,12 +856,17 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
 
             if palette:
                 # Toggle palette visibility if it already exists
-                was_visible = palette.isVisible
-                palette.isVisible = not was_visible
+                try:
+                    was_visible = palette.isVisible
+                    palette.isVisible = not was_visible
 
-                # Send fresh config when showing palette
-                if palette.isVisible:
-                    send_config_to_palette(palette)
+                    # Send fresh config when showing palette
+                    if palette.isVisible:
+                        send_config_to_palette(palette)
+                except RuntimeError:
+                    # Palette is in an invalid state - recreate it
+                    palette = None
+                    palette = self._create_palette()
             else:
                 # Create the palette for the first time
                 palette = self.ui.palettes.itemById(PALETTE_ID)
@@ -793,8 +876,13 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
                     palette = self._create_palette()
                 else:
                     # Palette exists but was hidden - show it
-                    palette.isVisible = True
-                    send_config_to_palette(palette)
+                    try:
+                        palette.isVisible = True
+                        send_config_to_palette(palette)
+                    except RuntimeError:
+                        # Palette is invalid - recreate it
+                        palette = None
+                        palette = self._create_palette()
 
         except Exception as e:
             # Display error message if palette creation/toggle fails
@@ -845,9 +933,16 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
 
             # Load current config
             config = load_config()
+
+            # Check for Notion Desktop installation
+            has_desktop = check_notion_protocol_handler()
+            desktop_path = get_notion_desktop_path() if has_desktop else None
+
             config_json = json.dumps({
                 'databaseUrl': config.get('database_url', ''),
-                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD)
+                'defaultMethod': config.get('default_open_method', DEFAULT_OPEN_METHOD),
+                'hasDesktop': has_desktop,
+                'desktopPath': desktop_path
             })
 
             # Inject config as a script tag right after <head>
@@ -891,8 +986,8 @@ class NotionSettingsHandler(adsk.core.CommandEventHandler):
         new_palette.closed.add(on_closed)
         handlers.append(on_closed)
 
-        # Set palette to dock at the top
-        new_palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateTop
+        # Dock palette on the left side
+        new_palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateLeft
 
         # Send initial configuration to populate the form
         send_config_to_palette(new_palette)
@@ -1030,14 +1125,42 @@ def run(context: Dict[str, Any]) -> None:
         ui = app.userInterface
 
         # ====================================================================
+        # CLEANUP EXISTING DEFINITIONS (for robustness)
+        # ====================================================================
+
+        # Remove any existing command definitions and controls from previous runs
+        qat_command_id = f'{ADDIN_NAME}CmdDef'
+        qat_toolbar = ui.toolbars.itemById('QAT')
+
+        # Remove existing QAT control if present
+        existing_qat_control = qat_toolbar.controls.itemById(qat_command_id)
+        if existing_qat_control:
+            existing_qat_control.deleteMe()
+
+        # Remove existing QAT command definition if present
+        existing_qat_cmd = ui.commandDefinitions.itemById(qat_command_id)
+        if existing_qat_cmd:
+            existing_qat_cmd.deleteMe()
+
+        # Remove existing settings command definition if present
+        existing_settings_cmd = ui.commandDefinitions.itemById(SETTINGS_CMD_ID)
+        if existing_settings_cmd:
+            existing_settings_cmd.deleteMe()
+
+        # Remove existing settings control from ADD-INS panel if present
+        workspace = ui.workspaces.itemById('FusionSolidEnvironment')
+        if workspace:
+            addins_panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+            if addins_panel:
+                existing_settings_control = addins_panel.controls.itemById(SETTINGS_CMD_ID)
+                if existing_settings_control:
+                    existing_settings_control.deleteMe()
+
+        # ====================================================================
         # QUICK ACCESS TOOLBAR BUTTON
         # ====================================================================
 
-        # Get reference to the Quick Access Toolbar
-        qat_toolbar = ui.toolbars.itemById('QAT')
-
         # Create command definition for QAT button
-        qat_command_id = f'{ADDIN_NAME}CmdDef'
         notion_quick_open_cmd = ui.commandDefinitions.addButtonDefinition(
             qat_command_id,
             ADDIN_NAME,
@@ -1071,7 +1194,7 @@ def run(context: Dict[str, Any]) -> None:
         handlers.append(on_settings_created)
 
         # Add settings command to ADD-INS panel in UTILITIES toolbar
-        workspace = ui.workspaces.itemById('FusionSolidEnvironment')
+        # Note: workspace was already retrieved during cleanup, reuse it
         if workspace:
             addins_panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
             if addins_panel:
