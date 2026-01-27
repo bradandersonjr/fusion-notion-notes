@@ -6,7 +6,7 @@
 	"description":	{
 		"":	"Quick access to create new Notion pages with configurable database URLs and desktop/web app support"
 	},
-	"version":	"0.6.0",
+	"version":	"1.0.0",
 	"runOnStartup":	false,
 	"supportedOS":	"windows|mac",
 	"editEnabled":	true
